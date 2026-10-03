@@ -31,7 +31,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: WaresCommands,
 
-    /// Registry URL (defaults to WARES_REGISTRY env var or https://wares.lumen-lang.com/api/v1)
+    /// Registry URL (defaults to WARES_REGISTRY env var or the built-in registry)
     #[arg(long, global = true)]
     pub registry: Option<String>,
 }
@@ -175,7 +175,7 @@ pub enum PolicyCommands {
 pub async fn run_command(command: WaresCommands, registry_arg: Option<String>) {
     let registry_url = registry_arg
         .or_else(|| std::env::var("WARES_REGISTRY").ok())
-        .unwrap_or_else(|| "https://wares.lumen-lang.com/api/v1".to_string());
+        .unwrap_or_else(|| crate::config::DEFAULT_REGISTRY_URL.to_string());
 
     match command {
         WaresCommands::Init { name } => cmd_init(name),

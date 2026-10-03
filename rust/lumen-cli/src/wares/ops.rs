@@ -427,12 +427,8 @@ fn resolve_dependencies_with_registry(
     }
 
     // SINGLE SOURCE OF TRUTH for registry URL
-    // Precedence: env var > config > default production registry
-    let registry_url = config
-        .registry
-        .as_ref()
-        .map(|r| r.effective_url())
-        .unwrap_or_else(|| "https://wares.lumen-lang.com/api/v1".to_string());
+    // Precedence: LUMEN_REGISTRY env var > [registry] in lumen.toml > default registry
+    let registry_url = config.registry_url();
 
     // Local cache directory for downloaded packages (separate from registry URL)
     let registry_dir = registry_dir_override
@@ -642,17 +638,25 @@ fn materialize_package(
             }
 
             // Not installed, need to download
-            if artifacts.is_empty() {
-                return Err(format!(
-                    "package '{}' has no artifacts to download",
-                    pkg.name
-                ));
-            }
-
-            let artifact = &artifacts[0];
+            let artifact = pick_artifact(artifacts)
+                .ok_or_else(|| format!("package '{}' has no artifacts to download", pkg.name))?;
             let cache_dir = registry_dir.join("cache");
             let version_cache_dir = cache_dir.join(&pkg.name).join(&pkg.version);
-            let tarball_path = version_cache_dir.join(format!("{}-{}.tar", pkg.name, pkg.version));
+            let tarball_path = version_cache_dir.join(format!(
+                "{}-{}.tar",
+                pkg.name.trim_start_matches('@').replace('/', "-"),
+                pkg.version
+            ));
+
+            // A cached tarball is only trusted if it still hashes to the locked value.
+            if tarball_path.exists() {
+                let cached_ok = crate::wares::client::sha256_file(&tarball_path)
+                    .map(|h| h.eq_ignore_ascii_case(&artifact.hash))
+                    .unwrap_or(false);
+                if !cached_ok {
+                    let _ = std::fs::remove_file(&tarball_path);
+                }
+            }
 
             if !tarball_path.exists() {
                 println!(
@@ -671,9 +675,24 @@ fn materialize_package(
                     .map_err(|e| format!("failed to download artifact: {}", e))?;
             }
 
-            // Extract to install directory
-            std::fs::create_dir_all(&install_dir).map_err(|e| e.to_string())?;
-            unpack_tarball(&tarball_path, &install_dir)?;
+            // Extract into a sibling temp dir and rename, so a partial extraction is
+            // never mistaken for an installed package.
+            let staging = install_dir.with_extension("partial");
+            if staging.exists() {
+                let _ = std::fs::remove_dir_all(&staging);
+            }
+            std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+            if let Err(e) = unpack_tarball(&tarball_path, &staging) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(e);
+            }
+            if install_dir.exists() {
+                let _ = std::fs::remove_dir_all(&install_dir);
+            }
+            std::fs::rename(&staging, &install_dir).map_err(|e| {
+                let _ = std::fs::remove_dir_all(&staging);
+                format!("failed to install {}: {}", pkg.name, e)
+            })?;
 
             let config_path = install_dir.join("lumen.toml");
             let config = LumenConfig::load_from(&config_path).map_err(|e| {
@@ -704,7 +723,7 @@ fn materialize_package(
             let install_dir = registry_dir
                 .join("git")
                 .join(sanitize_filename(url))
-                .join(&rev[..8]);
+                .join(rev.get(..8).unwrap_or(rev.as_str()));
 
             if !install_dir.exists() {
                 println!("{} {} from {}", status_label("Cloning"), pkg.name, url);
@@ -757,12 +776,61 @@ fn sanitize_filename(url: &str) -> String {
     .replace(".", "_")
 }
 
+/// Maximum number of entries and total unpacked bytes accepted from a package archive.
+const MAX_ARCHIVE_ENTRIES: usize = 20_000;
+const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Choose the artifact to install: prefer source archives over other kinds.
+fn pick_artifact(
+    artifacts: &[crate::lockfile::LockedArtifact],
+) -> Option<&crate::lockfile::LockedArtifact> {
+    ["tar", "tgz", "source"]
+        .iter()
+        .find_map(|kind| artifacts.iter().find(|a| a.kind == *kind))
+        .or_else(|| artifacts.first())
+}
+
+/// Unpack a package archive (plain tar or gzip-compressed tar, detected by magic bytes).
 fn unpack_tarball(tar_path: &Path, dst: &Path) -> Result<(), String> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(tar_path).map_err(|e| e.to_string())?;
+    let mut magic = [0u8; 2];
+    let n = file.read(&mut magic).map_err(|e| e.to_string())?;
+    let is_gzip = n == 2 && magic == [0x1f, 0x8b];
     let file = std::fs::File::open(tar_path).map_err(|e| e.to_string())?;
-    let mut archive = tar::Archive::new(file);
-    archive
-        .unpack(dst)
-        .map_err(|e: std::io::Error| e.to_string())?;
+    let reader: Box<dyn Read> = if is_gzip {
+        Box::new(flate2::read::GzDecoder::new(file))
+    } else {
+        Box::new(file)
+    };
+
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = 0usize;
+    let mut total = 0u64;
+    for entry in archive
+        .entries()
+        .map_err(|e: std::io::Error| format!("invalid package archive: {}", e))?
+    {
+        let mut entry =
+            entry.map_err(|e: std::io::Error| format!("invalid package archive: {}", e))?;
+        entries += 1;
+        total = total.saturating_add(entry.size());
+        if entries > MAX_ARCHIVE_ENTRIES || total > MAX_ARCHIVE_BYTES {
+            return Err("package archive is too large".to_string());
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_symlink() || kind.is_hard_link() {
+            return Err("package archive contains a link, which is not allowed".to_string());
+        }
+        // `unpack_in` refuses entries that would escape `dst` (absolute paths, `..`).
+        let unpacked = entry
+            .unpack_in(dst)
+            .map_err(|e: std::io::Error| format!("failed to unpack package archive: {}", e))?;
+        if !unpacked {
+            return Err("package archive contains an unsafe path".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -1022,7 +1090,7 @@ fn sync_lockfile(
     frozen: bool,
 ) -> Result<LockSyncOutcome, String> {
     let existing = LockFile::load(lock_path)?;
-    if existing == *desired {
+    if existing.is_equivalent(desired) {
         return Ok(LockSyncOutcome::Unchanged);
     }
 
@@ -1671,13 +1739,12 @@ pub fn pack() {
     let version = package_info.version.as_deref().unwrap_or("0.1.0");
 
     let dist_dir = project_dir.join("dist");
-    std::fs::create_dir_all(&dist_dir)
-        .map_err(|e| {
-            eprintln!("{} failed to create dist directory: {}", red("error:"), e);
-        })
-        .ok();
+    if let Err(e) = std::fs::create_dir_all(&dist_dir) {
+        eprintln!("{} failed to create dist directory: {}", red("error:"), e);
+        std::process::exit(1);
+    }
 
-    let tarball_name = format!("{}-{}.tgz", package_name, version);
+    let tarball_name = tarball_file_name(package_name, version);
     let tarball_path = dist_dir.join(&tarball_name);
 
     println!(
@@ -1705,6 +1772,16 @@ pub fn pack() {
             std::process::exit(1);
         }
     }
+}
+
+/// File name for a packed archive. Scoped names (`@ns/name`) contain a slash, so
+/// the scope is folded into the name: `@ns/name` + `0.1.0` -> `ns-name-0.1.0.tgz`.
+fn tarball_file_name(package_name: &str, version: &str) -> String {
+    format!(
+        "{}-{}.tgz",
+        package_name.trim_start_matches('@').replace('/', "-"),
+        version
+    )
 }
 
 fn create_package_tarball(project_dir: &Path, output_path: &Path) -> Result<(), String> {
@@ -1746,10 +1823,7 @@ fn create_package_tarball(project_dir: &Path, output_path: &Path) -> Result<(), 
             let rel_path = prefix.join(name);
 
             if path.is_file() {
-                if include_files.contains(&name)
-                    || name.ends_with(".lm")
-                    || name.ends_with(".lm.md")
-                {
+                if include_files.contains(&name) || is_lumen_source(&path) {
                     tar.append_path_with_name(&path, &rel_path)
                         .map_err(|e| format!("failed to add file {}: {}", name, e))?;
                 }

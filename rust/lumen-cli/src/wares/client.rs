@@ -111,6 +111,12 @@ impl RegistryClient {
     }
 
     /// Download an artifact by URL or CID.
+    ///
+    /// The bytes are written to a temporary `.part` file next to `output_path`,
+    /// hashed, and only renamed into place when they match `expected_hash`, so a
+    /// failed or tampered download never leaves a file that looks complete.
+    /// `file://` artifact URLs are only honoured when the registry itself is a
+    /// `file://` registry.
     pub fn download_artifact(
         &self,
         url: &str,
@@ -125,15 +131,47 @@ impl RegistryClient {
             format!("{}/{}", base, rel)
         };
 
+        if full_url.starts_with("file://") && !self.base_url.starts_with("file://") {
+            return Err(format!(
+                "refusing file:// artifact '{}' from a non-file registry",
+                full_url
+            ));
+        }
+
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
-        let mut file = File::create(output_path).map_err(|e| e.to_string())?;
+        let part_path = {
+            let mut name = output_path.as_os_str().to_owned();
+            name.push(".part");
+            std::path::PathBuf::from(name)
+        };
+
+        let result = self.download_to(&full_url, &part_path, expected_hash);
+        match result {
+            Ok(()) => std::fs::rename(&part_path, output_path).map_err(|e| {
+                let _ = std::fs::remove_file(&part_path);
+                format!("failed to move download into place: {}", e)
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_file(&part_path);
+                Err(e)
+            }
+        }
+    }
+
+    fn download_to(
+        &self,
+        full_url: &str,
+        part_path: &Path,
+        expected_hash: Option<&str>,
+    ) -> Result<(), String> {
+        let mut file = File::create(part_path).map_err(|e| e.to_string())?;
         let mut hasher = Sha256::new();
 
-        if full_url.starts_with("file://") {
-            let path = Path::new(full_url.strip_prefix("file://").unwrap());
+        if let Some(local) = full_url.strip_prefix("file://") {
+            let path = Path::new(local);
             let mut source = File::open(path)
                 .map_err(|e| format!("failed to open {}: {}", path.display(), e))?;
             let mut buffer = [0; 8192];
@@ -146,11 +184,11 @@ impl RegistryClient {
                 file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
             }
         } else {
-            let mut resp = self
-                .client
-                .get(&full_url)
-                .send()
-                .map_err(|e| e.to_string())?;
+            let mut req = self.client.get(full_url);
+            if let Some(ref key) = self.config.api_key {
+                req = req.header("Authorization", format!("Bearer {}", key));
+            }
+            let mut resp = req.send().map_err(|e| e.to_string())?;
             if !resp.status().is_success() {
                 return Err(format!(
                     "failed to download '{}': {}",
@@ -168,10 +206,11 @@ impl RegistryClient {
                 file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
             }
         }
+        file.flush().map_err(|e| e.to_string())?;
 
         if let Some(expected) = expected_hash {
             let actual = format!("sha256:{}", hex_encode(&hasher.finalize()));
-            if actual != expected {
+            if !actual.eq_ignore_ascii_case(expected) {
                 return Err(format!(
                     "artifact checksum mismatch: expected {}, got {}",
                     expected, actual
@@ -284,4 +323,34 @@ fn cid_to_hash(cid: &str) -> Result<String, String> {
     } else {
         Err(format!("Cannot extract hash from CID: {}", cid))
     }
+}
+
+/// Registry-relative path of a content-addressed artifact (`sha256:<hex>`),
+/// matching the `artifacts/sha256/<2 hex>/<rest>` layout.
+pub fn artifact_path_for_hash(hash: &str) -> String {
+    let hex = hash
+        .strip_prefix("cid:sha256:")
+        .or_else(|| hash.strip_prefix("sha256:"))
+        .unwrap_or(hash);
+    if hex.len() >= 4 && hex.is_char_boundary(2) {
+        format!("artifacts/sha256/{}/{}", &hex[..2], &hex[2..])
+    } else {
+        format!("artifacts/sha256/{}", hex)
+    }
+}
+
+/// `sha256:<hex>` digest of a file on disk.
+pub fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file =
+        File::open(path).map_err(|e| format!("failed to open {}: {}", path.display(), e))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(format!("sha256:{}", hex_encode(&hasher.finalize())))
 }

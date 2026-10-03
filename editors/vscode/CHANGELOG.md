@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+- Extension moved to the `alliecatowo` Open VSX namespace; new ID is `alliecatowo.lumen` (was `lumen-lang.lumen-lang`).
+- Slimmer package: no sourcemaps, sources or lockfile.
+
 ## 0.1.10
 - Switched to platform-specific LSP bundling.
 - Fixed extension entry point resolution issues during packaging.

@@ -1,9 +1,9 @@
 {
-  "name": "lumen-lang",
+  "name": "lumen",
   "displayName": "Lumen",
   "description": "Syntax highlighting and language support for the Lumen programming language",
   "version": "0.4.0",
-  "publisher": "lumen-lang",
+  "publisher": "alliecatowo",
   "license": "MIT",
   "repository": {
     "type": "git",

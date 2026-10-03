@@ -43,11 +43,11 @@ lumen --version
 
 ### VS Code
 
-Install the Lumen extension from [Open VSX](https://open-vsx.org/extension/lumen-lang/lumen-lang):
+Install the Lumen extension from [Open VSX](https://open-vsx.org/extension/alliecatowo/lumen):
 
 ```bash
 # Via command line if you use code-server or compatible editors
-code --install-extension lumen-lang.lumen-lang
+code --install-extension alliecatowo.lumen
 ```
 
 Or search for "Lumen" in the Extensions view (ensure you are using a registry that includes Open VSX if not using official VS Code).

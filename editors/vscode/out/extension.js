@@ -25,7 +25,8 @@ function runLumenCommand(args) {
     const document = editor.document;
     const isLumenMarkdown = document.languageId === "markdown" &&
         document.uri.fsPath.endsWith(".lm.md");
-    if (document.languageId !== "lumen" && !isLumenMarkdown) {
+    const isLumenExt = document.uri.fsPath.endsWith(".lumen");
+    if (document.languageId !== "lumen" && !isLumenMarkdown && !isLumenExt) {
         vscode_1.window.showErrorMessage("Not a Lumen file");
         return;
     }
@@ -458,7 +459,8 @@ function activate(context) {
         const document = event.document;
         const isLumenMarkdown = document.languageId === "markdown" &&
             document.uri.fsPath.endsWith(".lm.md");
-        if (document.languageId === "lumen" || isLumenMarkdown) {
+        const isLumenExt = document.uri.fsPath.endsWith(".lumen");
+        if (document.languageId === "lumen" || isLumenMarkdown || isLumenExt) {
             const lumenPath = getLumenPath();
             const filePath = document.uri.fsPath;
             const term = getTerminal();
@@ -474,7 +476,8 @@ function activate(context) {
         }
         const isLumenMarkdown = document.languageId === "markdown" &&
             document.uri.fsPath.endsWith(".lm.md");
-        if (document.languageId === "lumen" || isLumenMarkdown) {
+        const isLumenExt = document.uri.fsPath.endsWith(".lumen");
+        if (document.languageId === "lumen" || isLumenMarkdown || isLumenExt) {
             const lumenPath = getLumenPath();
             const filePath = document.uri.fsPath;
             const term = getTerminal();
@@ -515,9 +518,14 @@ function activate(context) {
         documentSelector: [
             { scheme: "file", language: "lumen" },
             { scheme: "file", language: "markdown", pattern: "**/*.lm.md" },
+            { scheme: "file", pattern: "**/*.lumen" },
         ],
         synchronize: {
-            fileEvents: vscode_1.workspace.createFileSystemWatcher("**/*.lm.md"),
+            fileEvents: [
+                vscode_1.workspace.createFileSystemWatcher("**/*.lm"),
+                vscode_1.workspace.createFileSystemWatcher("**/*.lm.md"),
+                vscode_1.workspace.createFileSystemWatcher("**/*.lumen"),
+            ],
         },
         outputChannel,
         revealOutputChannelOn: 3, // Error only

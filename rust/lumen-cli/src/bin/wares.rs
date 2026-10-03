@@ -238,12 +238,16 @@ fn main() {
             provider: _,
         } => {
             let token = resolve_token(token, token_stdin);
-            // For now mapping to registry_cmd logic
-            registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Login {
-                registry,
-                token,
-                name,
-            })
+            if token.is_none() {
+                // No token supplied: sign in through the registry's GitHub OAuth flow.
+                browser_login(registry);
+            } else {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Login {
+                    registry,
+                    token,
+                    name,
+                })
+            }
         }
         Commands::Logout { registry } => {
             registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Logout { registry })

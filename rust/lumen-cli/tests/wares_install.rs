@@ -405,3 +405,61 @@ fn init_rejects_bad_names_without_creating_anything() {
         "init left files behind"
     );
 }
+
+fn publish_in(dir: &Path, home: &Path, registry: &FileRegistry, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_wares"))
+        .arg("publish")
+        .args(args)
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("LUMEN_REGISTRY", registry.url())
+        .env_remove("LUMEN_AUTH_TOKEN")
+        .env_remove("WARES_REGISTRY")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn publish_dry_run_builds_the_archive_without_credentials() {
+    let tmp = TempDir::new("pubdry");
+    let reg = FileRegistry::new();
+    reg.publish("@t/lib", "1.0.0", &[]);
+    let pkg = tmp.path().join("pkg");
+    write_package(&pkg, "@t/pub", "0.1.0", &[("@t/lib", "\"^1.0.0\"")]);
+
+    let out = publish_in(&pkg, tmp.path(), &reg, &["--dry-run"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Dry run"), "{stdout}");
+    assert!(stdout.contains("sha256:"), "{stdout}");
+}
+
+#[test]
+fn publish_refuses_path_dependencies() {
+    let tmp = TempDir::new("pubpath");
+    let reg = FileRegistry::new();
+    let pkg = tmp.path().join("pkg");
+    write_package(&pkg, "@t/pub", "0.1.0", &[("@t/local", "{ path = \"../local\" }")]);
+
+    let out = publish_in(&pkg, tmp.path(), &reg, &["--dry-run"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be published"), "{}", text(&out));
+}
+
+#[test]
+fn publish_without_credentials_fails_cleanly() {
+    let tmp = TempDir::new("pubauth");
+    let reg = FileRegistry::new();
+    let pkg = tmp.path().join("pkg");
+    write_package(&pkg, "@t/pub", "0.1.0", &[]);
+
+    let out = publish_in(&pkg, tmp.path(), &reg, &[]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("wares login"),
+        "{}",
+        text(&out)
+    );
+}

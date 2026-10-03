@@ -348,3 +348,60 @@ fn find_file(dir: &Path) -> Option<PathBuf> {
     }
     None
 }
+
+#[test]
+fn init_creates_a_flat_directory_with_a_lint_clean_template() {
+    let tmp = TempDir::new("init");
+    let out = Command::new(env!("CARGO_BIN_EXE_wares"))
+        .args(["init", "@t/fresh"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+
+    // `./fresh`, not a nested `./@t/fresh` tree.
+    let pkg = tmp.path().join("fresh");
+    assert!(pkg.join("lumen.toml").exists(), "{}", text(&out));
+    assert!(!tmp.path().join("@t").exists());
+    let manifest = std::fs::read_to_string(pkg.join("lumen.toml")).unwrap();
+    assert!(manifest.contains("name = \"@t/fresh\""), "{manifest}");
+
+    // The generated sources pass the strict linter and type-check.
+    let lint = Command::new(env!("CARGO_BIN_EXE_lumen"))
+        .args(["lint", "--strict"])
+        .arg(pkg.join("src/main.lm.md"))
+        .output()
+        .unwrap();
+    let lint_text = text(&lint);
+    assert!(lint.status.success(), "{lint_text}");
+    assert!(
+        !lint_text.contains("warning(s)") && !lint_text.contains("error["),
+        "{lint_text}"
+    );
+    let check = Command::new(env!("CARGO_BIN_EXE_lumen"))
+        .arg("check")
+        .arg(pkg.join("src/main.lm.md"))
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{}", text(&check));
+}
+
+#[test]
+fn init_rejects_bad_names_without_creating_anything() {
+    let tmp = TempDir::new("initbad");
+    for bad in ["plain", "@t/Upper", "@t/a/b", "../x", "@t/"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_wares"))
+            .args(["init", bad])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{bad}: {}", text(&out));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("lumen pkg"), "{stderr}");
+    }
+    assert_eq!(
+        std::fs::read_dir(tmp.path()).unwrap().count(),
+        0,
+        "init left files behind"
+    );
+}

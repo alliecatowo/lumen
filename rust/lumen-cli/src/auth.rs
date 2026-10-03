@@ -271,23 +271,6 @@ impl SigningKeypair {
                 created_at: Utc::now(),
             })
         }
-
-        #[cfg(not(feature = "ed25519"))]
-        {
-            // Fallback: generate deterministic placeholder keys for testing
-            // In production, the ed25519-dalek feature should be enabled
-            let seed = rand::random::<[u8; 32]>();
-            let public_key = base64_encode(&seed);
-            let secret_key = base64_encode(&[seed.as_slice(), seed.as_slice()].concat());
-            let key_id = hex_encode(&sha256_hash(&seed)[..16]);
-
-            Ok(Self {
-                public_key,
-                secret_key,
-                key_id,
-                created_at: Utc::now(),
-            })
-        }
     }
 
     /// Sign data with this keypair.
@@ -305,14 +288,6 @@ impl SigningKeypair {
 
             let signature = signing_key.sign(data);
             Ok(base64_encode(&signature.to_bytes()))
-        }
-
-        #[cfg(not(feature = "ed25519"))]
-        {
-            // Fallback: return a placeholder signature
-            // This is NOT cryptographically secure and should only be used for testing
-            let hash = sha256_hash(data);
-            Ok(base64_encode(&hash))
         }
     }
 
@@ -339,13 +314,6 @@ impl SigningKeypair {
                 Ok(_) => Ok(true),
                 Err(_) => Ok(false),
             }
-        }
-
-        #[cfg(not(feature = "ed25519"))]
-        {
-            // Fallback: verify placeholder signature
-            let expected = self.sign(data)?;
-            Ok(expected == signature_b64)
         }
     }
 }
@@ -961,7 +929,7 @@ impl AuthenticatedClient {
     pub fn whoami(&self) -> Result<WhoamiResponse, AuthError> {
         if !self.is_authenticated() {
             return Err(AuthError::NotAuthenticated(
-                "No token configured. Run 'lumen registry login' first.".to_string(),
+                "No token configured. Run 'wares login' first.".to_string(),
             ));
         }
 
@@ -972,8 +940,7 @@ impl AuthenticatedClient {
                 .map_err(|e| AuthError::Parse(format!("Failed to parse whoami response: {}", e)))
         } else if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             Err(AuthError::NotAuthenticated(
-                "Token is invalid or expired. Run 'lumen registry login' to re-authenticate."
-                    .to_string(),
+                "Token is invalid or expired. Run 'wares login' to re-authenticate.".to_string(),
             ))
         } else {
             Err(AuthError::Http(format!("Whoami failed: {}", resp.status())))
@@ -1008,9 +975,9 @@ impl AuthenticatedClient {
     /// Handle 401/403 responses with helpful messages.
     pub fn check_auth_error(response: &reqwest::blocking::Response) -> Option<String> {
         match response.status() {
-            reqwest::StatusCode::UNAUTHORIZED => Some(
-                "Authentication failed. Run `lumen registry login` to authenticate.".to_string(),
-            ),
+            reqwest::StatusCode::UNAUTHORIZED => {
+                Some("Authentication failed. Run `wares login` to authenticate.".to_string())
+            }
             reqwest::StatusCode::FORBIDDEN => Some(
                 "You don't have permission to perform this action. Check your token scopes."
                     .to_string(),

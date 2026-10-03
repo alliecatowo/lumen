@@ -128,7 +128,7 @@ pub struct RegistryToken {
     /// Registry URL this token is for.
     pub registry: String,
     /// API token (stored encrypted, not plain text in production).
-    /// Use `lumen registry login` to set this securely.
+    /// Use `wares login` to set this securely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// Token name/description.

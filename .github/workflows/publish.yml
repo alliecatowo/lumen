@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+  # v0.5.0 is already tagged (and tags pushed by auto-release with GITHUB_TOKEN
+  # do not trigger workflows), so the first crates.io publish is a manual run:
+  #   gh workflow run publish.yml -R alliecatowo/lumen
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,45 +22,17 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       
-      - name: Publish lumen-vm
-        run: cargo publish -p lumen-vm --token ${CARGO_REGISTRY_TOKEN}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish lumen-runtime
-        run: |
-          sleep 10 # Wait for Crates.io to index
-          cargo publish -p lumen-runtime --token ${CARGO_REGISTRY_TOKEN}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish lumen-compiler
-        run: |
-          sleep 10
-          cargo publish -p lumen-compiler --token ${CARGO_REGISTRY_TOKEN}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish Providers
-        run: |
-          sleep 5
-          for provider in rust/lumen-provider-*; do
-            cargo publish --manifest-path "$provider/Cargo.toml" --token ${CARGO_REGISTRY_TOKEN}
-            sleep 5
-          done
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish CLI and LSP
-        run: |
-          sleep 10
-          cargo publish -p lumen-cli --token ${CARGO_REGISTRY_TOKEN}
-          cargo publish -p lumen-lsp --token ${CARGO_REGISTRY_TOKEN}
+      # Publishes every non-private workspace crate in dependency order and
+      # waits for the index between crates. Already-published versions are an
+      # error, so re-runs after a partial failure need the failed crate only.
+      - name: Publish workspace crates to crates.io
+        run: cargo publish --workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   publish-npm:
     name: Publish NPM Packages
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

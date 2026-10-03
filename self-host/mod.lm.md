@@ -12,6 +12,7 @@ import abi: *
 import serialize: *
 import intern: *
 import lexer: *
+import parser: *
 ```
 
 ## Overview
@@ -24,6 +25,7 @@ import lexer: *
 | `serialize` | ByteWriter/ByteReader, LIR binary serialization |
 | `intern` | StringInterner with intern/resolve/batch operations |
 | `lexer` | Self-hosted Lumen lexer — full tokenizer (Phase 1, S051–S090) |
+| `parser` | Self-hosted Lumen parser — Pratt parser + items/stmts (Phase 2, S091–S160) |
 | `main` | Compiler pipeline entry point and phase stubs |
 | `hybrid` | Design doc for `--use-lumen-frontend` CLI flag |
 

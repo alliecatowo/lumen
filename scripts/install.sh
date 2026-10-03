@@ -136,8 +136,9 @@ else
   command -v unzip >/dev/null 2>&1 || fail "unzip is required on Windows"
   unzip -o -q "$TMP_DIR/$ASSET" -d "$TMP_DIR/out" || fail "could not unpack $ASSET"
 fi
-[ -f "$TMP_DIR/out/lumen$EXE" ] && [ -f "$TMP_DIR/out/lumen-lsp$EXE" ] \
-  || fail "archive does not contain lumen$EXE and lumen-lsp$EXE"
+if [ ! -f "$TMP_DIR/out/lumen$EXE" ] || [ ! -f "$TMP_DIR/out/lumen-lsp$EXE" ]; then
+  fail "archive does not contain lumen$EXE and lumen-lsp$EXE"
+fi
 
 if [ -z "$INSTALL_DIR" ]; then
   if [ "$PLATFORM" != "windows" ] && [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then

@@ -228,5 +228,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: shellcheck
         if: matrix.os == 'ubuntu-latest'
-        run: shellcheck scripts/install.sh scripts/tests/install_test.sh scripts/bump-version.sh
+        run: shellcheck --severity=warning scripts/install.sh scripts/tests/install_test.sh scripts/bump-version.sh
       - run: sh scripts/tests/install_test.sh

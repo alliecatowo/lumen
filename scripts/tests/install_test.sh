@@ -6,9 +6,12 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 INSTALL="$ROOT/scripts/install.sh"
 WORK="$(mktemp -d)"
 SERVER_PID=""
-# shellcheck disable=SC2329
-cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$WORK"; }
+cleanup() {
+  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
+  rm -rf "$WORK"
+}
 trap cleanup EXIT INT TERM
+# shellcheck disable=SC2317
 
 FAILED=0
 ok() { printf 'ok   - %s\n' "$1"; }
@@ -79,7 +82,7 @@ if sh "$INSTALL" --bogus >/dev/null 2>&1; then bad "rejects unknown options"; el
 mkdir "$WORK/tmpdir"
 TMPDIR="$WORK/tmpdir" sh "$INSTALL" --version v9.9.9 --install-dir "$WORK/cleanup" >/dev/null 2>&1 || true
 TMPDIR="$WORK/tmpdir" sh "$INSTALL" --version v0.0.0-missing --install-dir "$WORK/cleanup2" >/dev/null 2>&1 || true
-if [ -z "$(find "$WORK/tmpdir" -mindepth 1 -print -quit)" ]; then ok "removes its temp directory (success and failure)"; else bad "removes its temp directory"; fi
+if [ -z "$(ls -A "$WORK/tmpdir")" ]; then ok "removes its temp directory (success and failure)"; else bad "removes its temp directory"; fi
 
 [ "$FAILED" = 0 ] && echo "all install.sh tests passed"
 exit "$FAILED"

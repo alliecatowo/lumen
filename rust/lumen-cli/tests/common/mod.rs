@@ -25,7 +25,12 @@ impl TempDir {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Canonicalize so paths compare equal to what the tool reports (macOS /var symlink).
-        TempDir(std::fs::canonicalize(&dir).unwrap())
+        // Not on Windows, where it yields \\?\ verbatim paths that are not valid in file URLs.
+        if cfg!(windows) {
+            TempDir(dir)
+        } else {
+            TempDir(std::fs::canonicalize(&dir).unwrap())
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -87,7 +92,13 @@ impl FileRegistry {
     }
 
     pub fn url(&self) -> String {
-        format!("file://{}", self.root.display())
+        let path = self.root.to_string_lossy().replace('\\', "/");
+        if path.starts_with('/') {
+            format!("file://{path}")
+        } else {
+            // Windows drive path: file:///C:/dir
+            format!("file:///{path}")
+        }
     }
 
     fn pkg_dir(&self, name: &str) -> PathBuf {

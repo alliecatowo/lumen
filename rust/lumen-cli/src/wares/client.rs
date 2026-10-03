@@ -170,8 +170,8 @@ impl RegistryClient {
         let mut file = File::create(part_path).map_err(|e| e.to_string())?;
         let mut hasher = Sha256::new();
 
-        if let Some(local) = full_url.strip_prefix("file://") {
-            let path = Path::new(local);
+        if let Some(path) = file_url_path(full_url) {
+            let path = path.as_path();
             let mut source = File::open(path)
                 .map_err(|e| format!("failed to open {}: {}", path.display(), e))?;
             let mut buffer = [0; 8192];
@@ -254,8 +254,8 @@ impl RegistryClient {
     // Helper methods
 
     fn fetch_json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T, String> {
-        if url.starts_with("file://") {
-            let path = Path::new(url.strip_prefix("file://").unwrap());
+        if let Some(path) = file_url_path(url) {
+            let path = path.as_path();
             let content = std::fs::read_to_string(path)
                 .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
             serde_json::from_str(&content).map_err(|e| format!("invalid JSON: {}", e))
@@ -284,6 +284,20 @@ impl RegistryClient {
 }
 
 // Helpers
+
+/// Local path of a `file://` URL. Accepts `file:///abs/path`, and on Windows
+/// `file:///C:/dir` (leading slash dropped) as well as `file://C:\dir`.
+fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    #[cfg(windows)]
+    {
+        let bytes = rest.as_bytes();
+        if bytes.first() == Some(&b'/') && bytes.get(2) == Some(&b':') {
+            return Some(std::path::PathBuf::from(&rest[1..]));
+        }
+    }
+    Some(std::path::PathBuf::from(rest))
+}
 
 fn parse_package_name(name: &str) -> (Option<&str>, &str) {
     if let Some(idx) = name.find('/') {

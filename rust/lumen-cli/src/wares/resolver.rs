@@ -546,10 +546,15 @@ fn make_absolute(base: &std::path::Path, path: &str) -> String {
     } else {
         base.join(p)
     };
-    std::fs::canonicalize(&joined)
-        .unwrap_or(joined)
-        .to_string_lossy()
-        .to_string()
+    let canonical = std::fs::canonicalize(&joined).unwrap_or(joined);
+    // Windows canonicalization yields `\\?\C:\...`; keep paths in their plain form.
+    #[cfg(windows)]
+    let canonical = canonical
+        .to_str()
+        .and_then(|s| s.strip_prefix(r"\\?\"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or(canonical);
+    canonical.to_string_lossy().to_string()
 }
 
 /// Read the normal dependencies of a path/git package, making nested path

@@ -320,13 +320,11 @@ lumen/
 ├── examples/               # Example programs
 ├── editors/               # Editor support (VS Code)
 ├── rust/
-│   ├── lumen-compiler/    # Compiler pipeline
-│   ├── lumen-vm/          # Register-based virtual machine
-│   ├── lumen-runtime/     # Runtime: tool dispatch, caching, tracing
+│   ├── lumen-compiler/    # Compiler pipeline (+ `jit` feature: Cranelift codegen)
+│   ├── lumen-runtime/     # VM, tool dispatch, tensors, providers (cargo features)
 │   ├── lumen-cli/         # Command-line interface
 │   ├── lumen-lsp/         # Language Server Protocol
-│   ├── lumen-wasm/        # WebAssembly bindings
-│   └── lumen-provider-*/  # Tool providers (HTTP, JSON, FS, MCP)
+│   └── lumen-wasm/        # WebAssembly bindings
 ├── SPEC.md                # Implementation-accurate spec
 └── CLAUDE.md              # AI assistant instructions
 ```

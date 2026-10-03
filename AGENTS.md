@@ -16,7 +16,7 @@ Lumen is a statically typed programming language for AI-native systems. Source f
 cargo build --release                    # Build all crates
 cargo test --workspace                   # Run all tests
 cargo test -p lumen-compiler             # Compiler tests only
-cargo test -p lumen-vm                   # VM tests only
+cargo test -p lumen-runtime              # Runtime + VM tests
 cargo test -p lumen-runtime              # Runtime tests only
 cargo test -p lumen-compiler -- spec_suite::test_name  # Single test
 cargo clippy --workspace                 # Lint check
@@ -30,15 +30,11 @@ lumen fmt <files>                        # Format Lumen source files
 
 | Crate | Purpose |
 |-------|---------|
-| `lumen-compiler` | 7-stage pipeline: markdown extraction -> lexer -> parser -> resolver -> typechecker -> constraints -> LIR lowering |
-| `lumen-vm` | Register-based VM executing 32-bit LIR bytecode (~100 opcodes) |
-| `lumen-runtime` | Tool dispatch, caching, tracing, futures, retry, crypto, HTTP, filesystem |
+| `lumen-compiler` | (`jit` feature: Cranelift `codegen`) 7-stage pipeline: markdown extraction -> lexer -> parser -> resolver -> typechecker -> constraints -> LIR lowering |
+| `lumen-runtime` | Register VM (`vm`), tensors, tool dispatch, caching, tracing, retry, and tool providers (`providers::*`, `provider-*` features) |
 | `lumen-cli` | CLI commands, package manager, module resolver, auth/TUF/transparency |
 | `lumen-lsp` | Language Server Protocol with semantic search |
-| `lumen-codegen` | ORC JIT code generation backend |
 | `lumen-wasm` | WebAssembly bindings (excluded from workspace) |
-| `lumen-provider-*` | Tool providers (HTTP, JSON, FS, MCP, Gemini, Crypto, Env) |
-| `lumen-tensor` | Tensor operations |
 
 ## Mandatory Rules for ALL Agents
 

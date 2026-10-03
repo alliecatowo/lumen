@@ -4,8 +4,8 @@
 
 - `lumen-cli`: user-facing entrypoint.
 - `lumen-compiler`: front-end and lowering pipeline.
-- `lumen-vm`: runtime for executing LIR.
-- `lumen-runtime`: trace and tool runtime utilities.
+- `lumen-runtime`: register VM (`lumen_runtime::vm`) executing LIR, tensors, tool providers, tracing and scheduling.
+- `lumen-lsp`: language server.
 
 ## Compiler Pipeline
 
@@ -80,12 +80,12 @@ Located under `rust/lumen-runtime/src/stdlib/` (runtime builtins) and future `st
 
 ### JIT Compilation
 
-- **Cranelift JIT** (`rust/lumen-vm/src/jit/cranelift.rs`) — hot-loop detection triggers compilation of LIR cells to native code via `cranelift-jit` `JITModule`; falls back to interpreter on unsupported opcodes
-- **OrcJIT engine** (`rust/lumen-vm/src/jit/orc.rs`) — LLVM OrcJIT v2 integration for ahead-of-time and lazy compilation; manages module lifetimes and symbol resolution across compiled cells
+- **Cranelift JIT** (`rust/lumen-runtime/src/vm/jit/cranelift.rs`) — hot-loop detection triggers compilation of LIR cells to native code via `cranelift-jit` `JITModule`; falls back to interpreter on unsupported opcodes
+- **OrcJIT engine** (`rust/lumen-runtime/src/vm/jit/orc.rs`) — LLVM OrcJIT v2 integration for ahead-of-time and lazy compilation; manages module lifetimes and symbol resolution across compiled cells
 
 ### Concurrency Model
 
-- **M:N work-stealing scheduler** (`rust/lumen-vm/src/scheduler.rs`) — N OS threads each run a local deque of lightweight tasks; idle threads steal from peers
+- **M:N work-stealing scheduler** (`rust/lumen-runtime/src/scheduler.rs`) — N OS threads each run a local deque of lightweight tasks; idle threads steal from peers
 - **Channels** — typed bounded/unbounded MPSC channels; session-typed variant enforces protocol ordering
 - **Actors** — each actor is a single-threaded mailbox consumer; supervised restart on panic
 - **Supervisors** — one-for-one and one-for-all restart strategies; configurable backoff and max-restart limits
@@ -94,7 +94,7 @@ Located under `rust/lumen-runtime/src/stdlib/` (runtime builtins) and future `st
 
 ### Durability
 
-- **Checkpoint/restore** — `rust/lumen-vm/src/checkpoint.rs` serializes the full VM state (registers, call stack, heap) to a versioned binary format; restore resumes execution from the snapshot
+- **Checkpoint/restore** — `rust/lumen-runtime/src/checkpoint.rs` serializes the full VM state (registers, call stack, heap) to a versioned binary format; restore resumes execution from the snapshot
 - **Replay** — trace logs recorded with `--trace-dir` can be replayed deterministically, re-executing tool calls from cached results
 - **Time-travel debug** — `lumen trace step <run-id> [--back N]` walks backward through recorded execution states
 - **Versioned state** — process runtimes (`memory`, `machine`) maintain an append-only log of state transitions; any prior version is retrievable by sequence number

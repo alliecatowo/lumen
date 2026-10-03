@@ -52,7 +52,7 @@ When emitting `Eq` for literal patterns:
 3. Each pattern branch needs its own jump target
 4. Exhaustiveness is checked at typecheck time, but lowering must handle the `_` fallthrough
 
-## Value Representation (`rust/lumen-vm/src/values.rs`)
+## Value Representation (`rust/lumen-runtime/src/vm/values.rs`)
 - Collections (List, Tuple, Set, Map, Record) are `Rc<T>` wrapped
 - Mutation uses `Rc::make_mut()` for copy-on-write
 - Set uses `BTreeSet<Value>` (O(log n)) NOT `Vec<Value>`
@@ -61,7 +61,7 @@ When emitting `Eq` for literal patterns:
 ## Type::Any Propagation
 Builtin functions return `Type::Any`. In BinOp type inference, you MUST check for `Type::Any` BEFORE falling through to type-specific branches. Missing this check causes spurious type errors on valid code.
 
-## VM Dispatch Loop (`rust/lumen-vm/src/vm/mod.rs`)
+## VM Dispatch Loop (`rust/lumen-runtime/src/vm/vm/mod.rs`)
 - Core dispatch in `vm/mod.rs`
 - Builtin dispatch in `vm/intrinsics.rs`
 - Arithmetic operations in `vm/ops.rs`
@@ -96,7 +96,7 @@ Builtin functions return `Type::Any`. In BinOp type inference, you MUST check fo
 ## Test Commands
 ```
 cargo test -p lumen-compiler                          # Compiler tests
-cargo test -p lumen-vm                                # VM tests
+cargo test -p lumen-runtime                                # VM tests
 cargo test -p lumen-compiler -- spec_suite::test_name # Single spec test
 cargo test --workspace                                # Full suite (~5,300+)
 ```

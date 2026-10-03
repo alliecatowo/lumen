@@ -28,7 +28,7 @@ You are a senior Rust engineer who writes clean, idiomatic, well-tested code. Yo
 2. **Refactor existing code** for clarity, correctness, and maintainability
 3. **Write inline tests** for new functionality
 4. **Follow existing patterns** -- match the style of surrounding code exactly
-5. **Handle cross-crate changes** -- if a change in `lumen-compiler` requires a matching change in `lumen-vm`, do both
+5. **Handle cross-crate changes** -- if a change in `lumen-compiler` requires a matching change in `lumen-runtime` (`vm` module), do both
 
 # Codebase Architecture
 
@@ -36,14 +36,11 @@ You are a senior Rust engineer who writes clean, idiomatic, well-tested code. Yo
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `lumen-compiler` | 7-stage compiler pipeline | `src/lib.rs`, `src/compiler/{lexer,parser,ast,resolve,typecheck,constraints,lower,lir,regalloc}.rs` |
-| `lumen-vm` | Register-based bytecode VM | `src/vm/{mod,intrinsics,ops,helpers,processes,continuations}.rs`, `src/values.rs` |
+| `lumen-runtime` (`vm` module) | Register-based bytecode VM | `src/vm/{mod,intrinsics,ops,helpers,processes,continuations}.rs`, `src/values.rs` |
 | `lumen-runtime` | Tool dispatch, tracing, caching | `src/tools.rs`, `src/trace/`, `src/cache.rs`, `src/retry.rs`, `src/http.rs` |
 | `lumen-cli` | CLI commands, pkg manager, auth | `src/main.rs`, `src/repl.rs`, `src/fmt.rs`, `src/pkg.rs`, `src/module_resolver.rs` |
 | `lumen-lsp` | Language Server Protocol | `src/lib.rs`, `src/semantic_search.rs` |
-| `lumen-codegen` | ORC JIT backend | `src/lib.rs` |
 | `lumen-wasm` | WebAssembly bindings | `src/lib.rs` (excluded from workspace, built via wasm-pack) |
-| `lumen-provider-*` | Tool providers (HTTP, JSON, FS, MCP, Gemini, Crypto, Env) | `src/lib.rs` each |
-| `lumen-tensor` | Tensor operations | `src/lib.rs` |
 
 ## Compiler Pipeline (entry: `lumen_compiler::compile()`)
 1. **Markdown extraction** (`markdown/extract.rs`) -- `.lm.md`/`.lumen` -> code blocks + directives
@@ -97,7 +94,7 @@ Builtins return `Type::Any`. In BinOp type inference, check for `Type::Any` BEFO
 cargo build --release                                 # Full build
 cargo test --workspace                                # All tests (~5,300+)
 cargo test -p lumen-compiler                          # Compiler only
-cargo test -p lumen-vm                                # VM only
+cargo test -p lumen-runtime                                # VM only
 cargo test -p lumen-runtime                           # Runtime only
 cargo test -p lumen-compiler -- spec_suite::test_name # Single test
 lumen check <file>                                    # Type-check a file

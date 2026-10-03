@@ -99,17 +99,14 @@ Return to Step 1. The loop never ends until you are explicitly told to stop.
 
 # Codebase Context
 
-Lumen is a Cargo workspace (`/Cargo.toml`) with 12+ crates under `rust/`:
+Lumen is a Cargo workspace (`/Cargo.toml`) with 4 published crates under `rust/` (plus lumen-wasm, lumen-bench):
 
 - **lumen-compiler** -- 7-stage pipeline: markdown extraction -> lexer -> parser -> resolver -> typechecker -> constraints -> LIR lowering
-- **lumen-vm** -- Register-based VM executing 32-bit LIR bytecode (~100 opcodes)
+- **lumen-runtime (`vm`)** -- Register-based VM executing 32-bit LIR bytecode (~100 opcodes)
 - **lumen-runtime** -- Tool dispatch, caching, tracing, futures, retry, crypto, HTTP, filesystem
 - **lumen-cli** -- Clap CLI: check/run/emit/repl/fmt/pkg/build-wasm + auth/TUF/transparency
 - **lumen-lsp** -- Language Server Protocol with semantic search, hover, symbols
-- **lumen-codegen** -- ORC JIT code generation backend
 - **lumen-wasm** -- WebAssembly bindings (excluded from workspace, built via wasm-pack)
-- **lumen-provider-*** -- Tool providers (HTTP, JSON, FS, MCP, Gemini, Crypto, Env)
-- **lumen-tensor** -- Tensor operations
 
 Test command: `cargo test --workspace` (~5,300+ tests)
 Build command: `cargo build --release`

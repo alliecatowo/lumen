@@ -70,11 +70,10 @@ Some features touch everything:
 
 ## File Counts by Crate (approximate)
 - `lumen-compiler`: ~30 source files, the largest crate
-- `lumen-vm`: ~15 source files
+- `lumen-runtime` (`vm` module): ~15 source files
 - `lumen-runtime`: ~40 source files (many small modules)
 - `lumen-cli`: ~20 source files
 - `lumen-lsp`: ~5 source files
-- `lumen-codegen`: ~3 source files
 - Provider crates: 1-3 files each
 
 ## Key Specifications

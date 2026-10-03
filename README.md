@@ -45,11 +45,10 @@ Building AI systems today means juggling Python notebooks, API clients, prompt t
 ## Quick Start
 
 ```bash
-# Install (One-liner)
-curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh
-
-# Or via Cargo
-cargo install lumen-cli
+# Install: pick one
+brew install alliecatowo/tap/lumen   # macOS / Linux (Homebrew)
+curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh   # release binary
+cargo install lumen-cli              # from crates.io
 
 # Create your first program
 cat > hello.lm.md << 'EOF'
@@ -61,6 +60,18 @@ EOF
 # Run it
 lumen run hello.lm.md
 ```
+
+```text
+   Compiling hello.lm.md
+     Running main
+
+Hello, World!
+✓ Finished in 0.01s
+```
+
+Editor support: install the **Lumen** extension from [Open VSX](https://open-vsx.org/extension/alliecatowo/lumen)
+(`code --install-extension alliecatowo.lumen` on VS Codium / code-server). Browser and edge:
+`npm install lumen-wasm`. Details in the [installation guide](https://alliecatowo.github.io/lumen/learn/installation).
 
 ## Features
 

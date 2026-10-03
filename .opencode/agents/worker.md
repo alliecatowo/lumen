@@ -42,13 +42,10 @@ You are the workhorse of the team. You handle the volume -- small fixes, mechani
 | Crate | Key Files |
 |-------|-----------|
 | `lumen-compiler` | `src/lib.rs`, `src/compiler/{lexer,parser,ast,resolve,typecheck,constraints,lower,lir,regalloc}.rs` |
-| `lumen-vm` | `src/vm/{mod,intrinsics,ops,helpers,processes,continuations}.rs`, `src/values.rs` |
+| `lumen-runtime` (`vm` module) | `src/vm/{mod,intrinsics,ops,helpers,processes,continuations}.rs`, `src/values.rs` |
 | `lumen-runtime` | `src/tools.rs`, `src/trace/`, `src/cache.rs`, `src/retry.rs`, `src/http.rs` |
 | `lumen-cli` | `src/main.rs`, `src/repl.rs`, `src/fmt.rs`, `src/pkg.rs`, `src/module_resolver.rs` |
 | `lumen-lsp` | `src/lib.rs`, `src/semantic_search.rs` |
-| `lumen-codegen` | `src/lib.rs` |
-| `lumen-provider-*` | `src/lib.rs` each |
-| `lumen-tensor` | `src/lib.rs` |
 
 ## Lumen Syntax Essentials
 - **Cells** = functions: `cell name(params) -> ReturnType ... end`

@@ -33,14 +33,14 @@ You are the gatekeeper of production quality. Every feature that passes tests mu
 
 # Performance-Critical Areas in Lumen
 
-## VM Dispatch Loop (`rust/lumen-vm/src/vm/mod.rs`)
+## VM Dispatch Loop (`rust/lumen-runtime/src/vm/vm/mod.rs`)
 This is the hottest code path in the entire project. Every Lumen program spends most of its time here.
 - Instruction decoding must be minimal -- the 32-bit fixed-width format is chosen for fast decode
 - Branch prediction matters -- opcode dispatch ordering affects throughput
 - Register access must be O(1) -- no hash lookups in the inner loop
 - Value cloning must be cheap -- `Rc<T>` provides O(1) clone, but unnecessary clones still hurt
 
-## Value Representation (`rust/lumen-vm/src/values.rs`)
+## Value Representation (`rust/lumen-runtime/src/vm/values.rs`)
 - Collections wrapped in `Rc<T>` for COW via `Rc::make_mut()`
 - `BTreeSet<Value>` for sets -- O(log n) operations, ordered
 - String interning via `StringTable` -- ensures string comparisons are pointer comparisons where possible
@@ -53,11 +53,11 @@ This is the hottest code path in the entire project. Every Lumen program spends 
 - `lower_safe()` uses `catch_unwind` which has overhead -- only for crash protection, not expected errors
 
 ## Memory Management
-- `rust/lumen-vm/src/gc.rs` -- Garbage collection
-- `rust/lumen-vm/src/immix.rs` -- Immix GC implementation
-- `rust/lumen-vm/src/arena.rs` -- Arena allocation
-- `rust/lumen-vm/src/tlab.rs` -- Thread-local allocation buffers
-- `rust/lumen-vm/src/tagged.rs` -- Tagged pointer representation
+- `rust/lumen-runtime/src/vm/gc.rs` -- Garbage collection
+- `rust/lumen-runtime/src/vm/immix.rs` -- Immix GC implementation
+- `rust/lumen-runtime/src/vm/arena.rs` -- Arena allocation
+- `rust/lumen-runtime/src/vm/tlab.rs` -- Thread-local allocation buffers
+- `rust/lumen-runtime/src/vm/tagged.rs` -- Tagged pointer representation
 
 ## Runtime Performance
 - Tool dispatch in `rust/lumen-runtime/src/tools.rs` -- minimize dispatch overhead
@@ -65,8 +65,8 @@ This is the hottest code path in the entire project. Every Lumen program spends 
 - Retry with backoff in `retry.rs` -- ensure backoff calculations are correct (exponential/fibonacci)
 - Future scheduling: `Eager` vs `DeferredFifo` -- deterministic mode uses FIFO which has different perf characteristics
 
-## JIT Tiering (`rust/lumen-vm/src/jit_tier.rs`)
-- Hot loop detection and JIT compilation via `lumen-codegen`
+## JIT Tiering (`rust/lumen-runtime/src/vm/jit_tier.rs`)
+- Hot loop detection and JIT compilation via `lumen_compiler::codegen`
 - Tier thresholds must be tuned: too eager wastes compile time, too lazy wastes interpretation time
 
 ## Benchmarks (`bench/`)
@@ -76,11 +76,11 @@ This is the hottest code path in the entire project. Every Lumen program spends 
 # Architecture Rules
 
 ## Crate Boundaries
-- `lumen-compiler` MUST NOT depend on `lumen-vm` (compiler is frontend, VM is backend)
-- `lumen-vm` depends on `lumen-compiler` only for `lir.rs` types (the bytecode format)
+- `lumen-compiler` MUST NOT depend on `lumen-runtime` (`vm` module) (compiler is frontend, VM is backend)
+- `lumen-runtime` (`vm` module) depends on `lumen-compiler` only for `lir.rs` types (the bytecode format)
 - `lumen-runtime` is the shared infrastructure layer -- both VM and CLI depend on it
 - `lumen-cli` orchestrates everything but should not contain business logic
-- `lumen-provider-*` crates implement the `ToolDispatcher` trait from `lumen-runtime`
+- `lumen_runtime::providers` implement the `ToolDispatcher` trait from `lumen-runtime`
 
 ## Code Quality Gates
 1. **No `unwrap()` in library code** -- use `?` or explicit error handling

@@ -175,7 +175,9 @@ impl RegistryConfig {
     pub fn effective_url(&self) -> String {
         // 1. Check environment variable first (local override)
         if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
-            return url;
+            if !url.trim().is_empty() {
+                return url;
+            }
         }
         // 2. Use configured default
         self.default.clone()
@@ -894,7 +896,9 @@ impl LumenConfig {
     pub fn registry_url(&self) -> String {
         // Check env var first
         if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
-            return url;
+            if !url.trim().is_empty() {
+                return url;
+            }
         }
         // Then config
         if let Some(registry) = &self.registry {

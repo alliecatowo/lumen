@@ -2,9 +2,14 @@
 
 use sha2::{Digest, Sha256};
 
+/// Lowercase hex encoding of a byte slice.
+pub fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Hash a string value using SHA-256.
 pub fn sha256_hash(data: &str) -> String {
-    format!("sha256:{:x}", Sha256::digest(data.as_bytes()))
+    format!("sha256:{}", hex_lower(&Sha256::digest(data.as_bytes())))
 }
 
 /// Compute a canonical hash of a JSON value for caching.

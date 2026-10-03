@@ -907,7 +907,7 @@ impl R2Client {
 
     /// Calculate AWS Signature V4 signature.
     fn calculate_signature(&self, date_stamp: &str, string_to_sign: &str) -> R2Result<String> {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha2::Sha256;
 
         type HmacSha256 = Hmac<Sha256>;

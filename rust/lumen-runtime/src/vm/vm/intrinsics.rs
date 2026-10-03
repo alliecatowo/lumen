@@ -397,7 +397,10 @@ impl VM {
             "hash" | "sha256" => {
                 use sha2::{Digest, Sha256};
                 let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
-                let h = format!("sha256:{:x}", Sha256::digest(s.as_bytes()));
+                let h = format!(
+                    "sha256:{}",
+                    crate::trace::hasher::hex_lower(&Sha256::digest(s.as_bytes()))
+                );
                 Ok(Value::String(StringRef::Owned(h)))
             }
             // Collection ops
@@ -723,7 +726,10 @@ impl VM {
             "sha512" => {
                 use sha2::{Digest, Sha512};
                 let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
-                let h = format!("sha512:{:x}", Sha512::digest(s.as_bytes()));
+                let h = format!(
+                    "sha512:{}",
+                    crate::trace::hasher::hex_lower(&Sha512::digest(s.as_bytes()))
+                );
                 Ok(Value::String(StringRef::Owned(h)))
             }
             "uuid" | "uuid_v4" => {
@@ -2289,10 +2295,9 @@ impl VM {
             3 => {
                 // HASH
                 use sha2::{Digest, Sha256};
-                let hash = format!(
-                    "{:x}",
-                    Sha256::digest(value_to_str_cow(arg, &self.strings).as_bytes())
-                );
+                let hash = crate::trace::hasher::hex_lower(&Sha256::digest(
+                    value_to_str_cow(arg, &self.strings).as_bytes(),
+                ));
                 Ok(Value::String(StringRef::Owned(format!("sha256:{}", hash))))
             }
             4 => {
@@ -4579,11 +4584,23 @@ fn net_unsupported(op: &str) -> Value {
 // ---- Native (non-wasm32) HTTP implementation ----
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Build a response map from a successful ureq response.
-fn http_response_to_value(resp: ureq::Response) -> Value {
-    let status = resp.status() as i64;
+type HttpResponse = ureq::http::Response<ureq::Body>;
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Shared agent: HTTP error statuses (4xx/5xx) are returned as responses, not errors.
+fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Build a response map from a ureq response.
+fn http_response_to_value(resp: HttpResponse) -> Value {
+    let status = resp.status().as_u16() as i64;
     let ok = (200..300).contains(&(status as u16));
-    let body = resp.into_string().unwrap_or_default();
+    let body = resp.into_body().read_to_string().unwrap_or_default();
 
     let mut map = BTreeMap::new();
     map.insert("ok".to_string(), Value::Bool(ok));
@@ -4593,37 +4610,41 @@ fn http_response_to_value(resp: ureq::Response) -> Value {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Build an error response map from a ureq error.
+/// Build an error response map from a ureq transport-level error.
 fn http_error_to_value(err: ureq::Error) -> Value {
     let mut map = BTreeMap::new();
     map.insert("ok".to_string(), Value::Bool(false));
-    match err {
-        ureq::Error::Status(code, resp) => {
-            map.insert("status".to_string(), Value::Int(code as i64));
-            let body = resp.into_string().unwrap_or_default();
-            map.insert("body".to_string(), Value::String(StringRef::Owned(body)));
-        }
-        ureq::Error::Transport(transport) => {
-            map.insert("status".to_string(), Value::Int(0));
-            map.insert(
-                "error".to_string(),
-                Value::String(StringRef::Owned(transport.to_string())),
-            );
-            map.insert(
-                "body".to_string(),
-                Value::String(StringRef::Owned(String::new())),
-            );
-        }
-    }
+    map.insert("status".to_string(), Value::Int(0));
+    map.insert(
+        "error".to_string(),
+        Value::String(StringRef::Owned(err.to_string())),
+    );
+    map.insert(
+        "body".to_string(),
+        Value::String(StringRef::Owned(String::new())),
+    );
     Value::new_map(map)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn http_builtin_get(url: &str) -> Value {
-    match ureq::get(url).call() {
+fn http_send(method: &str, url: &str, body: &str, headers: &[(&str, &str)]) -> Value {
+    let mut builder = ureq::http::Request::builder().method(method).uri(url);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let req = match builder.body(body.to_string()) {
+        Ok(r) => r,
+        Err(e) => return http_error_to_value(ureq::Error::from(e)),
+    };
+    match http_agent().run(req) {
         Ok(resp) => http_response_to_value(resp),
         Err(err) => http_error_to_value(err),
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_builtin_get(url: &str) -> Value {
+    http_send("GET", url, "", &[])
 }
 #[cfg(target_arch = "wasm32")]
 fn http_builtin_get(_url: &str) -> Value {
@@ -4632,13 +4653,7 @@ fn http_builtin_get(_url: &str) -> Value {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_post(url: &str, body: &str) -> Value {
-    match ureq::post(url)
-        .set("Content-Type", "application/json")
-        .send_string(body)
-    {
-        Ok(resp) => http_response_to_value(resp),
-        Err(err) => http_error_to_value(err),
-    }
+    http_send("POST", url, body, &[("Content-Type", "application/json")])
 }
 #[cfg(target_arch = "wasm32")]
 fn http_builtin_post(_url: &str, _body: &str) -> Value {
@@ -4647,13 +4662,7 @@ fn http_builtin_post(_url: &str, _body: &str) -> Value {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_put(url: &str, body: &str) -> Value {
-    match ureq::put(url)
-        .set("Content-Type", "application/json")
-        .send_string(body)
-    {
-        Ok(resp) => http_response_to_value(resp),
-        Err(err) => http_error_to_value(err),
-    }
+    http_send("PUT", url, body, &[("Content-Type", "application/json")])
 }
 #[cfg(target_arch = "wasm32")]
 fn http_builtin_put(_url: &str, _body: &str) -> Value {
@@ -4662,10 +4671,7 @@ fn http_builtin_put(_url: &str, _body: &str) -> Value {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_delete(url: &str) -> Value {
-    match ureq::delete(url).call() {
-        Ok(resp) => http_response_to_value(resp),
-        Err(err) => http_error_to_value(err),
-    }
+    http_send("DELETE", url, "", &[])
 }
 #[cfg(target_arch = "wasm32")]
 fn http_builtin_delete(_url: &str) -> Value {
@@ -4679,46 +4685,32 @@ fn http_builtin_request(
     body: &str,
     headers: &[(String, String)],
 ) -> Value {
-    let mut req = match method.to_uppercase().as_str() {
-        "GET" => ureq::get(url),
-        "POST" => ureq::post(url),
-        "PUT" => ureq::put(url),
-        "DELETE" => ureq::delete(url),
-        "PATCH" => ureq::patch(url),
-        "HEAD" => ureq::head(url),
-        _ => {
-            let mut map = BTreeMap::new();
-            map.insert("ok".to_string(), Value::Bool(false));
-            map.insert("status".to_string(), Value::Int(0));
-            map.insert(
-                "error".to_string(),
-                Value::String(StringRef::Owned(format!(
-                    "unsupported HTTP method: {}",
-                    method
-                ))),
-            );
-            map.insert(
-                "body".to_string(),
-                Value::String(StringRef::Owned(String::new())),
-            );
-            return Value::new_map(map);
-        }
-    };
-
-    for (name, value) in headers {
-        req = req.set(name, value);
+    let method = method.to_uppercase();
+    if !matches!(
+        method.as_str(),
+        "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD"
+    ) {
+        let mut map = BTreeMap::new();
+        map.insert("ok".to_string(), Value::Bool(false));
+        map.insert("status".to_string(), Value::Int(0));
+        map.insert(
+            "error".to_string(),
+            Value::String(StringRef::Owned(format!(
+                "unsupported HTTP method: {}",
+                method
+            ))),
+        );
+        map.insert(
+            "body".to_string(),
+            Value::String(StringRef::Owned(String::new())),
+        );
+        return Value::new_map(map);
     }
-
-    let result = if body.is_empty() {
-        req.call()
-    } else {
-        req.send_string(body)
-    };
-
-    match result {
-        Ok(resp) => http_response_to_value(resp),
-        Err(err) => http_error_to_value(err),
-    }
+    let hdrs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_str()))
+        .collect();
+    http_send(&method, url, body, &hdrs)
 }
 #[cfg(target_arch = "wasm32")]
 fn http_builtin_request(

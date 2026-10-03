@@ -34,6 +34,25 @@ use std::collections::HashMap;
 // WASI error codes (errno)
 // ---------------------------------------------------------------------------
 
+/// Upper bound on simultaneously open descriptors per context.
+const MAX_OPEN_FDS: usize = 1024;
+
+/// True if `path` is a non-empty relative path that cannot leave its base directory.
+fn path_is_confined(path: &str) -> bool {
+    if path.is_empty() || path.contains('\0') || path.contains('\\') {
+        return false;
+    }
+    if path.starts_with('/') {
+        return false;
+    }
+    // Windows-style drive prefix (`C:`), which would reset the base on some hosts.
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    path.split('/').all(|part| part != "..")
+}
+
 /// WASI error numbers (subset of `errno` from WASI preview1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -52,6 +71,8 @@ pub enum WasiErrno {
     Acces = 2,
     /// Function not supported.
     Nosys = 52,
+    /// Too many open files.
+    Mfile = 33,
     /// I/O error.
     Io = 29,
 }
@@ -74,6 +95,7 @@ impl std::fmt::Display for WasiErrno {
             WasiErrno::Acces => write!(f, "permission denied"),
             WasiErrno::Nosys => write!(f, "function not supported"),
             WasiErrno::Io => write!(f, "I/O error"),
+            WasiErrno::Mfile => write!(f, "too many open files"),
         }
     }
 }
@@ -577,9 +599,18 @@ impl WasiContext {
             return Err(WasiErrno::Notdir);
         }
 
+        // The path is untrusted guest input and must stay inside the preopened
+        // directory: relative only, no `..`, no NUL, no drive/UNC prefixes.
+        if !path_is_confined(path) {
+            return Err(WasiErrno::Acces);
+        }
+        if self.fds.len() >= MAX_OPEN_FDS {
+            return Err(WasiErrno::Mfile);
+        }
+
         // Resolve host path.
         let host_base = dir.host_path.as_deref().ok_or(WasiErrno::Noent)?;
-        let full_path = format!("{}/{}", host_base, path);
+        let full_path = format!("{}/{}", host_base.trim_end_matches('/'), path);
 
         let fd = self.next_fd;
         self.next_fd += 1;
@@ -621,14 +652,9 @@ impl WasiContext {
     ///
     /// Bridges `random_get` WASI call to Lumen's `random` builtin.
     pub fn random_get(&self, buf: &mut [u8]) -> Result<(), WasiErrno> {
-        // Simple deterministic "random" for testing; in a real WASI host
-        // this would use the host's CSPRNG.
-        for (i, byte) in buf.iter_mut().enumerate() {
-            // LCG-based pseudo-random for deterministic testing
-            let seed = (i as u64).wrapping_mul(6364136223846793005).wrapping_add(1);
-            *byte = (seed >> 33) as u8;
-        }
-        Ok(())
+        // Cryptographically secure bytes from the host (getrandom: OS RNG natively,
+        // crypto.getRandomValues in the browser).
+        getrandom::getrandom(buf).map_err(|_| WasiErrno::Io)
     }
 
     // --- Args and environment ---
@@ -1001,6 +1027,49 @@ mod tests {
         ctx.random_get(&mut buf).expect("random_get should work");
         // At least some bytes should be non-zero
         assert!(buf.iter().any(|&b| b != 0), "should produce non-zero bytes");
+    }
+
+    #[test]
+    fn random_get_is_not_a_fixed_sequence() {
+        let ctx = WasiContext::new();
+        let mut a = [0u8; 32];
+        let mut b = [0u8; 32];
+        ctx.random_get(&mut a).unwrap();
+        ctx.random_get(&mut b).unwrap();
+        assert_ne!(a, b, "two draws must differ");
+    }
+
+    #[test]
+    fn path_open_cannot_escape_the_preopen() {
+        let config = WasiConfig::new().with_preopen("/data", "/host/data");
+        let mut ctx = WasiContext::from_config(config);
+        for bad in [
+            "../secret",
+            "a/../../secret",
+            "/etc/passwd",
+            "C:/Windows",
+            "a\\..\\b",
+            "",
+            "nul\0byte",
+        ] {
+            assert_eq!(ctx.path_open(3, bad).unwrap_err(), WasiErrno::Acces, "{bad:?}");
+        }
+        let fd = ctx.path_open(3, "dir/file.txt").expect("a plain relative path is fine");
+        assert!(fd > 3);
+    }
+
+    #[test]
+    fn path_open_limits_open_descriptors() {
+        let config = WasiConfig::new().with_preopen("/data", "/host/data");
+        let mut ctx = WasiContext::from_config(config);
+        let mut last = Ok(0);
+        for i in 0..(MAX_OPEN_FDS + 10) {
+            last = ctx.path_open(3, &format!("f{i}"));
+            if last.is_err() {
+                break;
+            }
+        }
+        assert_eq!(last.unwrap_err(), WasiErrno::Mfile);
     }
 
     #[test]

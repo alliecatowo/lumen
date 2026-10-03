@@ -4,7 +4,7 @@ version = "0.6.0"
 edition = "2021"
 authors = ["Lumen Contributors"]
 description = "WebAssembly bindings for the Lumen compiler and VM"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/alliecatowo/lumen"
 homepage = "https://alliecatowo.github.io/lumen/"
 
@@ -17,6 +17,8 @@ lumen-compiler = { path = "../lumen-compiler" }
 lumen-runtime = { path = "../lumen-runtime", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# CSPRNG for WASI random_get; the `js` feature uses crypto.getRandomValues in browsers.
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

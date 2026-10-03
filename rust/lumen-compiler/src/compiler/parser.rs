@@ -344,7 +344,8 @@ impl Parser {
 
     /// Push an opening bracket onto the stack for error tracking
     fn looks_like_named_field(&self) -> bool {
-        matches!(self.peek_kind(), TokenKind::Ident(_))
+        // Keyword-like names (`role: String`, `type: String`, ...) are fields too.
+        Self::is_identifier_like(self.peek_kind())
             && matches!(self.peek_n_kind(1), Some(TokenKind::Colon))
     }
 
@@ -849,7 +850,15 @@ impl Parser {
                 self.advance();
                 self.consume_block_until_end();
             } else {
-                self.consume_rest_of_line();
+                // Anything else in a record body is a typo (`y Int`, `y = Int`...):
+                // report it instead of silently dropping the field.
+                let tok = self.current().clone();
+                return Err(ParseError::MalformedConstruct {
+                    construct: format!("record '{name}'"),
+                    reason: format!("expected `field: Type`, found `{}`", tok.kind),
+                    line: tok.span.line,
+                    col: tok.span.col,
+                });
             }
             self.skip_newlines();
         }
@@ -4448,10 +4457,21 @@ impl Parser {
 
     fn parse_type_inner(&mut self) -> Result<TypeExpr, ParseError> {
         let base = self.parse_base_type()?;
+        // `A & B` (intersection) is not supported; parsing it as a union would
+        // silently accept values of either type.
+        if matches!(self.peek_kind(), TokenKind::Ampersand) {
+            let tok = self.current().clone();
+            return Err(ParseError::MalformedConstruct {
+                construct: "type".to_string(),
+                reason: "intersection types (`A & B`) are not supported; use a record".to_string(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
         // Check for union: T | U
-        if matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Ampersand) {
+        if matches!(self.peek_kind(), TokenKind::Pipe) {
             let mut types = vec![base];
-            while matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Ampersand) {
+            while matches!(self.peek_kind(), TokenKind::Pipe) {
                 self.advance();
                 types.push(self.parse_base_type()?);
             }

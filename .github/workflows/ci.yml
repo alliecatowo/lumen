@@ -139,3 +139,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -p lumen-lsp --bin diag_latency_bench
+
+  # ---------------------------------------------------------------------------
+  # Dependency advisories (RUSTSEC). Vulnerabilities fail the job; unmaintained
+  # or unsound warnings (bincode, memmap2) are reported but allowed.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  # ---------------------------------------------------------------------------
+  # VS Code extension type-check (Dependabot majors have broken tsc before)
+  # ---------------------------------------------------------------------------
+  vscode-extension:
+    name: VS Code Extension (tsc)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit -p .

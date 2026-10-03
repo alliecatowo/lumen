@@ -6,7 +6,7 @@ This file provides instructions to all AI agents working on this repository.
 
 Lumen is a statically typed programming language for AI-native systems. Source files can be markdown (`.lm.md`) with fenced Lumen code blocks, raw source (`.lm`), or markdown-native (`.lumen`). The compiler produces LIR bytecode executed on a register-based VM.
 
-**Repository**: Rust workspace with 12+ crates under `rust/`
+**Repository**: Rust workspace with 4 published crates (`lumen-cli`, `lumen-compiler`, `lumen-runtime`, `lumen-lsp`) under `rust/`, plus `lumen-wasm` and `lumen-bench`
 **Language**: Rust 2021 edition
 **Tests**: ~5,300+ passing across all crates
 

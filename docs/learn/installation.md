@@ -5,15 +5,32 @@
 - **Rust** 1.70+ (for building from source)
 - **Cargo** (comes with Rust)
 
+## Homebrew (macOS and Linux)
+
+```bash
+brew install alliecatowo/tap/lumen
+```
+
+## Release binary
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh
+```
+
+Downloads the latest release for your platform and installs `lumen` and `lumen-lsp` to
+`/usr/local/bin`, or `~/.lumen/bin` when that is not writable. Archives for Linux (x64, x64-musl,
+arm64), macOS (x64, arm64) and Windows (x64) are on the
+[releases page](https://github.com/alliecatowo/lumen/releases).
+
 ## Install from Crates.io
 
 ```bash
 cargo install lumen-cli
+cargo install lumen-lsp   # optional language server
 ```
 
 The crate is `lumen-cli`; it installs the `lumen` binary. (The unrelated `lumen-lang` crate on
-crates.io belongs to a different project.) The crates.io release lags the source tree, so for the
-latest version install from git:
+crates.io belongs to a different project.) To track the source tree instead:
 
 ```bash
 cargo install --git https://github.com/alliecatowo/lumen lumen-cli
@@ -59,7 +76,7 @@ Features:
 
 ### Other Editors
 
-Lumen has a Tree-sitter grammar at `tree-sitter-lumen/` that can be used with:
+Lumen has a Tree-sitter grammar (`npm install tree-sitter-lumen`, source in `tree-sitter-lumen/`) that can be used with:
 - Neovim (via nvim-treesitter)
 - Helix
 - Emacs (via tree-sitter)
@@ -67,6 +84,14 @@ Lumen has a Tree-sitter grammar at `tree-sitter-lumen/` that can be used with:
 ## WASM Support
 
 For browser/edge deployment:
+
+Use the published package from npm:
+
+```bash
+npm install lumen-wasm
+```
+
+Or build it yourself:
 
 ```bash
 # Install wasm-pack

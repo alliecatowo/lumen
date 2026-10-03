@@ -1,26 +1,30 @@
 name = "wares-registry"
 main = "worker.ts"
 compatibility_date = "2024-01-01"
+workers_dev = true
 
-# R2 bucket for package storage
+# Path-based routing under wares.lumen-lang.com. This must stay a top-level key:
+# placed after a [[services]] table it would be parsed as part of that binding.
+# A zone route (not a custom domain) is required because the pattern has a path.
+routes = [
+  { pattern = "wares.lumen-lang.com/api/*", zone_name = "lumen-lang.com" }
+]
+
+# R2 bucket for package storage (also holds short-lived OAuth login sessions
+# under the sessions/ prefix; add a lifecycle rule to expire them after 1 day).
 [[r2_buckets]]
 binding = "REGISTRY_BUCKET"
 bucket_name = "wares-registry"
 
-# Environment variables
+# Secrets (set with `wrangler secret put <NAME>`, never commit values):
+#   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   OAuth app; publish tokens are verified against it
+#   CA_PRIVATE_KEY                           PKCS#8 PEM, signs ephemeral certificates
+#   TRANSPARENCY_LOG_API_KEY                 must equal REGISTRY_API_KEY on the log worker
+# Optional vars:
+#   TRANSPARENCY_LOG_REQUIRED = "false"      let publishes succeed (marked unlogged) if the log rejects them
 [vars]
-# Set via wrangler secret put for sensitive values
-# TRANSPARENCY_LOG_URL = "https://wares-transparency-log.alliecatowo.workers.dev"
-# TRANSPARENCY_LOG_API_KEY = "..."
-# CA_PRIVATE_KEY = "..."
-# CA_CERTIFICATE = "..."
 
-# Service Bindings
+# Service binding to the transparency log worker
 [[services]]
 binding = "LOG_WORKER"
 service = "wares-transparency-log"
-
-# Custom domain - path-based routing under wares.lumen-lang.com
-routes = [
-  { pattern = "wares.lumen-lang.com/api/*", custom_domain = true }
-]

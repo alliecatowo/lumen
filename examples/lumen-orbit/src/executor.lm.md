@@ -6,7 +6,7 @@ Execution-stage command assembly and deterministic simulation logic.
 import models: PlannerSnapshot, ToolInvocationSpec, ExecutionCommand, ExecutionSnapshot
 
 cell build_execution_command(planner: PlannerSnapshot, invocation: ToolInvocationSpec) -> ExecutionCommand
-  let expected: String = "remote-dispatch"
+  let mut expected: String = "remote-dispatch"
   if planner.manual_review
     expected = "dispatch-blocked"
   end
@@ -20,10 +20,10 @@ cell build_execution_command(planner: PlannerSnapshot, invocation: ToolInvocatio
 end
 
 cell simulate_execution(mode: String, command: ExecutionCommand) -> ExecutionSnapshot
-  let retries: Int = 0
-  let fallback_used: Bool = false
-  let outcome: String = command.expected_outcome
-  let error_reason: String = "none"
+  let mut retries: Int = 0
+  let mut fallback_used: Bool = false
+  let mut outcome: String = command.expected_outcome
+  let mut error_reason: String = "none"
 
   if command.expected_outcome == "dispatch-blocked"
     outcome = "dispatch-blocked"

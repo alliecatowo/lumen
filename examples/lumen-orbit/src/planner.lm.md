@@ -15,7 +15,7 @@ cell make_step(step_no: Int, phase: String, tool_alias: String, summary: String)
 end
 
 cell count_critical(missions: list[Mission]) -> Int
-  let critical: Int = 0
+  let mut critical: Int = 0
   for mission in missions
     if mission.priority >= 8
       critical = critical + 1
@@ -45,7 +45,7 @@ cell build_planner_snapshot(
   research_tool: String,
   notify_tool: String
 ) -> PlannerSnapshot
-  let steps: list[PlannedStep] = []
+  let mut steps: list[PlannedStep] = []
   steps = append(steps, make_step(1, "planning", planning_tool, "draft launch ordering and constraints"))
   steps = append(steps, make_step(2, "research", research_tool, "pull active incident context from GitHub MCP"))
   steps = append(steps, make_step(3, "notify", notify_tool, "publish launch readiness snapshot"))

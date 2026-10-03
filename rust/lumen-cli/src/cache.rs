@@ -311,7 +311,7 @@ impl ContentCache {
         source: Option<&str>,
     ) -> Result<(), CacheError> {
         // Compute hash
-        let hash = format!("{:x}", Sha256::digest(content));
+        let hash = hex::encode(Sha256::digest(content));
 
         // Check size limits
         let new_size = content.len() as u64;
@@ -363,7 +363,7 @@ impl ContentCache {
         content: &[u8],
         source: Option<&str>,
     ) -> Result<CacheKey, CacheError> {
-        let hash = format!("{:x}", Sha256::digest(content));
+        let hash = hex::encode(Sha256::digest(content));
         let key = CacheKey::Sha256(hash);
         self.put(&key, content, source)?;
         Ok(key)

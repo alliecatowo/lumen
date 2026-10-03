@@ -25,12 +25,12 @@ cell build_execution_command(
   requested_tool: String,
   payload_json: String
 ) -> ExecutionCommand
-  let tool_alias = requested_tool
+  let mut tool_alias = requested_tool
   if requested_tool == ""
     tool_alias = selected_tool
   end
 
-  let expected = "remote-dispatch"
+  let mut expected = "remote-dispatch"
   if manual_review
     expected = "dispatch-denied"
   end
@@ -44,10 +44,10 @@ cell build_execution_command(
 end
 
 cell build_execution_snapshot(mode: String, command: ExecutionCommand) -> ExecutionSnapshot
-  let outcome = command.expected_outcome
-  let retries = 0
-  let fallback_used = false
-  let error_reason = "none"
+  let mut outcome = command.expected_outcome
+  let mut retries = 0
+  let mut fallback_used = false
+  let mut error_reason = "none"
 
   if mode == "dry-run"
     if command.tool_alias == "GitHubIssues"

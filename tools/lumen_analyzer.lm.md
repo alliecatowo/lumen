@@ -31,7 +31,7 @@ cell abs_int(n: Int) -> Int
 end
 
 cell pad_right(s: String, width: Int) -> String
-  let result = s
+  let mut result = s
   while len(result) < width
     result = result + " "
   end
@@ -39,7 +39,7 @@ cell pad_right(s: String, width: Int) -> String
 end
 
 cell pad_left(s: String, width: Int) -> String
-  let result = s
+  let mut result = s
   while len(result) < width
     result = " " + result
   end
@@ -47,8 +47,8 @@ cell pad_left(s: String, width: Int) -> String
 end
 
 cell repeat_char(ch: String, count: Int) -> String
-  let result = ""
-  let i = 0
+  let mut result = ""
+  let mut i = 0
   while i < count
     result = result + ch
     i = i + 1
@@ -77,7 +77,7 @@ cell format_ratio(a: Int, b: Int) -> String
   let ratio_times_100 = (a * 100) / b
   let whole = ratio_times_100 / 100
   let frac = ratio_times_100 % 100
-  let frac_str = to_string(frac)
+  let mut frac_str = to_string(frac)
   if frac < 10
     frac_str = "0" + frac_str
   end
@@ -123,7 +123,7 @@ cell str_list_contains(items: list[String], target: String) -> Bool
 end
 
 cell str_list_unique(items: list[String]) -> list[String]
-  let result = []
+  let mut result = []
   for item in items
     if not str_list_contains(result, item)
       result = append(result, item)
@@ -133,7 +133,7 @@ cell str_list_unique(items: list[String]) -> list[String]
 end
 
 cell int_list_sum(items: list[Int]) -> Int
-  let total = 0
+  let mut total = 0
   for item in items
     total = total + item
   end
@@ -144,8 +144,8 @@ cell int_list_max(items: list[Int]) -> Int
   if len(items) == 0
     return 0
   end
-  let result = items[0]
-  let i = 1
+  let mut result = items[0]
+  let mut i = 1
   while i < len(items)
     if items[i] > result
       result = items[i]
@@ -159,8 +159,8 @@ cell int_list_min(items: list[Int]) -> Int
   if len(items) == 0
     return 0
   end
-  let result = items[0]
-  let i = 1
+  let mut result = items[0]
+  let mut i = 1
   while i < len(items)
     if items[i] < result
       result = items[i]
@@ -191,7 +191,7 @@ cell int_list_median(items: list[Int]) -> Int
 end
 
 cell count_matching(items: list[String], target: String) -> Int
-  let count = 0
+  let mut count = 0
   for item in items
     if item == target
       count = count + 1
@@ -486,16 +486,16 @@ end
 
 ```lumen
 cell count_lumen_defs(lines: list[String]) -> list[Int]
-  let cells = 0
-  let records = 0
-  let enums = 0
-  let imports = 0
-  let processes = 0
-  let effects = 0
-  let grants = 0
-  let type_als = 0
-  let externs = 0
-  let tests = 0
+  let mut cells = 0
+  let mut records = 0
+  let mut enums = 0
+  let mut imports = 0
+  let mut processes = 0
+  let mut effects = 0
+  let mut grants = 0
+  let mut type_als = 0
+  let mut externs = 0
+  let mut tests = 0
   for line in lines
     if is_cell_definition(line)
       cells = cells + 1
@@ -532,15 +532,15 @@ cell count_lumen_defs(lines: list[String]) -> list[Int]
 end
 
 cell count_rust_defs(lines: list[String]) -> list[Int]
-  let fns = 0
-  let structs = 0
-  let enums = 0
-  let traits = 0
-  let impls = 0
-  let tests = 0
-  let uses = 0
-  let mods = 0
-  let macros = 0
+  let mut fns = 0
+  let mut structs = 0
+  let mut enums = 0
+  let mut traits = 0
+  let mut impls = 0
+  let mut tests = 0
+  let mut uses = 0
+  let mut mods = 0
+  let mut macros = 0
   for line in lines
     if is_rust_fn(line)
       fns = fns + 1
@@ -574,13 +574,13 @@ cell count_rust_defs(lines: list[String]) -> list[Int]
 end
 
 cell count_line_types_lumen_md(lines: list[String]) -> list[Int]
-  let blank = 0
-  let comments = 0
-  let code = 0
-  let max_line_len = 0
-  let in_code_block = false
+  let mut blank = 0
+  let mut comments = 0
+  let mut code = 0
+  let mut max_line_len = 0
+  let mut in_code_block = false
 
-  let i = 0
+  let mut i = 0
   while i < len(lines)
     let line = lines[i]
     let line_len = len(line)
@@ -618,8 +618,8 @@ cell count_line_types_lumen_md(lines: list[String]) -> list[Int]
 end
 
 cell extract_code_block_lines(lines: list[String]) -> list[String]
-  let result = []
-  let in_code_block = false
+  let mut result = []
+  let mut in_code_block = false
   for line in lines
     let trimmed = trim(line)
     if starts_with(trimmed, "```lumen")
@@ -638,10 +638,10 @@ cell extract_code_block_lines(lines: list[String]) -> list[String]
 end
 
 cell count_line_types_general(lines: list[String], file_type: String) -> list[Int]
-  let blank = 0
-  let comments = 0
-  let code = 0
-  let max_line_len = 0
+  let mut blank = 0
+  let mut comments = 0
+  let mut code = 0
+  let mut max_line_len = 0
 
   for line in lines
     let line_len = len(line)
@@ -694,7 +694,7 @@ end
 
 cell analyze_lumen_md_file(path: String) -> FileStats
   let content = read_file(path)
-  let lines = split(content, "\n")
+  let mut lines = split(content, "\n")
   let total = len(lines)
   let line_counts = count_line_types_lumen_md(lines)
   let code_lines_list = extract_code_block_lines(lines)
@@ -732,7 +732,7 @@ end
 
 cell analyze_lumen_raw_file(path: String, file_type: String) -> FileStats
   let content = read_file(path)
-  let lines = split(content, "\n")
+  let mut lines = split(content, "\n")
   let total = len(lines)
   let line_counts = count_line_types_general(lines, file_type)
   let defs = count_lumen_defs(lines)
@@ -769,7 +769,7 @@ end
 
 cell analyze_rust_file(path: String) -> FileStats
   let content = read_file(path)
-  let lines = split(content, "\n")
+  let mut lines = split(content, "\n")
   let total = len(lines)
   let line_counts = count_line_types_general(lines, "rust")
   let defs = count_rust_defs(lines)
@@ -807,7 +807,7 @@ end
 cell analyze_other_file(path: String) -> FileStats
   let file_type = classify_file(path)
   let content = read_file(path)
-  let lines = split(content, "\n")
+  let mut lines = split(content, "\n")
   let total = len(lines)
   let line_counts = count_line_types_general(lines, file_type)
 
@@ -847,7 +847,7 @@ end
 
 cell analyze_rust_file_fast(path: String) -> FileStats
   let content = read_file(path)
-  let lines = split(content, "\n")
+  let mut lines = split(content, "\n")
   let total = len(lines)
   let defs = count_rust_defs(lines)
 
@@ -883,7 +883,7 @@ end
 
 cell analyze_rust_file_lines_only(path: String) -> FileStats
   let content = read_file(path)
-  let lines = split(content, "\n")
+  let mut lines = split(content, "\n")
   let total = len(lines)
 
   FileStats(
@@ -939,11 +939,11 @@ end
 ```lumen
 cell collect_lumen_md_files(base: String) -> list[String]
   let files = glob("**/*.lm.md")
-  let result = []
-  let seen = []
+  let mut result = []
+  let mut seen = []
   for f in files
     if not contains(f, "/target/") and not contains(f, "node_modules")
-      let dup = false
+      let mut dup = false
       for s in seen
         if s == f
           dup = true
@@ -961,11 +961,11 @@ end
 
 cell collect_lumen_raw_files(base: String) -> list[String]
   let files = glob("**/*.lm")
-  let result = []
-  let seen = []
+  let mut result = []
+  let mut seen = []
   for f in files
     if not contains(f, "/target/") and not contains(f, "node_modules") and not ends_with(f, ".lm.md")
-      let dup = false
+      let mut dup = false
       for s in seen
         if s == f
           dup = true
@@ -983,11 +983,11 @@ end
 
 cell collect_lumen_native_files(base: String) -> list[String]
   let files = glob("**/*.lumen")
-  let result = []
-  let seen = []
+  let mut result = []
+  let mut seen = []
   for f in files
     if not contains(f, "/target/") and not contains(f, "node_modules") and f != "./.lumen" and f != ".lumen"
-      let dup = false
+      let mut dup = false
       for s in seen
         if s == f
           dup = true
@@ -1005,11 +1005,11 @@ end
 
 cell collect_rust_src_files(dir: String) -> list[String]
   let files = glob(dir + "/**/*.rs")
-  let result = []
-  let seen = []
+  let mut result = []
+  let mut seen = []
   for f in files
     if not contains(f, "/target/")
-      let dup = false
+      let mut dup = false
       for s in seen
         if s == f
           dup = true
@@ -1027,7 +1027,7 @@ end
 
 cell collect_toml_files(base: String) -> list[String]
   let files = glob("*.toml")
-  let result = []
+  let mut result = []
   for f in files
     if not contains(f, "/target/")
       result = append(result, f)
@@ -1038,7 +1038,7 @@ end
 
 cell collect_markdown_files(base: String) -> list[String]
   let files = glob("*.md")
-  let result = []
+  let mut result = []
   for f in files
     if not contains(f, "/target/") and not ends_with(f, ".lm.md")
       result = append(result, f)
@@ -1048,7 +1048,7 @@ cell collect_markdown_files(base: String) -> list[String]
 end
 
 cell collect_all_project_files() -> list[String]
-  let all_files = []
+  let mut all_files = []
 
   let lm_md = collect_lumen_md_files(".")
   for f in lm_md
@@ -1119,8 +1119,8 @@ end
 
 ```lumen
 cell analyze_all_files(files: list[String]) -> list[FileStats]
-  let results = []
-  let i = 0
+  let mut results = []
+  let mut i = 0
   let total = len(files)
   while i < total
     let path = files[i]
@@ -1136,7 +1136,7 @@ end
 
 ```lumen
 cell total_lines_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.total_lines
   end
@@ -1144,7 +1144,7 @@ cell total_lines_all(stats: list[FileStats]) -> Int
 end
 
 cell total_blank_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.blank_lines
   end
@@ -1152,7 +1152,7 @@ cell total_blank_all(stats: list[FileStats]) -> Int
 end
 
 cell total_comment_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.comment_lines
   end
@@ -1160,7 +1160,7 @@ cell total_comment_all(stats: list[FileStats]) -> Int
 end
 
 cell total_code_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.code_lines
   end
@@ -1168,7 +1168,7 @@ cell total_code_all(stats: list[FileStats]) -> Int
 end
 
 cell total_cells_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.cell_defs
   end
@@ -1176,7 +1176,7 @@ cell total_cells_all(stats: list[FileStats]) -> Int
 end
 
 cell total_records_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.record_defs
   end
@@ -1184,7 +1184,7 @@ cell total_records_all(stats: list[FileStats]) -> Int
 end
 
 cell total_enums_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.enum_defs
   end
@@ -1192,7 +1192,7 @@ cell total_enums_all(stats: list[FileStats]) -> Int
 end
 
 cell total_imports_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.import_stmts
   end
@@ -1200,7 +1200,7 @@ cell total_imports_all(stats: list[FileStats]) -> Int
 end
 
 cell total_fns_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.fn_defs
   end
@@ -1208,7 +1208,7 @@ cell total_fns_all(stats: list[FileStats]) -> Int
 end
 
 cell total_structs_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.struct_defs
   end
@@ -1216,7 +1216,7 @@ cell total_structs_all(stats: list[FileStats]) -> Int
 end
 
 cell total_rust_enums_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.rust_enum_defs
   end
@@ -1224,7 +1224,7 @@ cell total_rust_enums_all(stats: list[FileStats]) -> Int
 end
 
 cell total_traits_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.trait_defs
   end
@@ -1232,7 +1232,7 @@ cell total_traits_all(stats: list[FileStats]) -> Int
 end
 
 cell total_impls_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.impl_blocks
   end
@@ -1240,7 +1240,7 @@ cell total_impls_all(stats: list[FileStats]) -> Int
 end
 
 cell total_tests_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.test_annotations
   end
@@ -1248,7 +1248,7 @@ cell total_tests_all(stats: list[FileStats]) -> Int
 end
 
 cell total_processes_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.process_defs
   end
@@ -1256,7 +1256,7 @@ cell total_processes_all(stats: list[FileStats]) -> Int
 end
 
 cell total_effects_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.effect_decls
   end
@@ -1264,7 +1264,7 @@ cell total_effects_all(stats: list[FileStats]) -> Int
 end
 
 cell total_grants_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.grant_stmts
   end
@@ -1272,7 +1272,7 @@ cell total_grants_all(stats: list[FileStats]) -> Int
 end
 
 cell total_type_aliases_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.type_aliases
   end
@@ -1280,7 +1280,7 @@ cell total_type_aliases_all(stats: list[FileStats]) -> Int
 end
 
 cell total_externs_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.extern_decls
   end
@@ -1288,7 +1288,7 @@ cell total_externs_all(stats: list[FileStats]) -> Int
 end
 
 cell total_uses_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.use_stmts
   end
@@ -1296,7 +1296,7 @@ cell total_uses_all(stats: list[FileStats]) -> Int
 end
 
 cell total_mods_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.mod_decls
   end
@@ -1304,7 +1304,7 @@ cell total_mods_all(stats: list[FileStats]) -> Int
 end
 
 cell total_macros_all(stats: list[FileStats]) -> Int
-  let total = 0
+  let mut total = 0
   for s in stats
     total = total + s.macro_defs
   end
@@ -1316,7 +1316,7 @@ end
 
 ```lumen
 cell filter_by_type(stats: list[FileStats], file_type: String) -> list[FileStats]
-  let result = []
+  let mut result = []
   for s in stats
     if s.file_type == file_type
       result = append(result, s)
@@ -1326,7 +1326,7 @@ cell filter_by_type(stats: list[FileStats], file_type: String) -> list[FileStats
 end
 
 cell filter_by_category(stats: list[FileStats], category: String) -> list[FileStats]
-  let result = []
+  let mut result = []
   for s in stats
     if file_category(s.file_type) == category
       result = append(result, s)
@@ -1336,7 +1336,7 @@ cell filter_by_category(stats: list[FileStats], category: String) -> list[FileSt
 end
 
 cell filter_lumen(stats: list[FileStats]) -> list[FileStats]
-  let result = []
+  let mut result = []
   for s in stats
     if s.file_type == "lumen-md" or s.file_type == "lumen-raw" or s.file_type == "lumen-native"
       result = append(result, s)
@@ -1350,7 +1350,7 @@ cell filter_rust(stats: list[FileStats]) -> list[FileStats]
 end
 
 cell get_file_types(stats: list[FileStats]) -> list[String]
-  let types = []
+  let mut types = []
   for s in stats
     if not str_list_contains(types, s.file_type)
       types = append(types, s.file_type)
@@ -1360,7 +1360,7 @@ cell get_file_types(stats: list[FileStats]) -> list[String]
 end
 
 cell get_categories(stats: list[FileStats]) -> list[String]
-  let cats = []
+  let mut cats = []
   for s in stats
     let cat = file_category(s.file_type)
     if not str_list_contains(cats, cat)
@@ -1375,7 +1375,7 @@ end
 
 ```lumen
 cell get_line_counts(stats: list[FileStats]) -> list[Int]
-  let counts = []
+  let mut counts = []
   for s in stats
     counts = append(counts, s.total_lines)
   end
@@ -1383,13 +1383,13 @@ cell get_line_counts(stats: list[FileStats]) -> list[Int]
 end
 
 cell find_largest_files(stats: list[FileStats], n: Int) -> list[FileStats]
-  let result = []
-  let used = []
-  let count = 0
+  let mut result = []
+  let mut used = []
+  let mut count = 0
   while count < n and count < len(stats)
-    let best_idx = -1
-    let best_lines = -1
-    let i = 0
+    let mut best_idx = -1
+    let mut best_lines = -1
+    let mut i = 0
     while i < len(stats)
       if not str_list_contains(used, to_string(i))
         if stats[i].total_lines > best_lines
@@ -1410,13 +1410,13 @@ end
 
 cell find_most_complex_lumen(stats: list[FileStats], n: Int) -> list[FileStats]
   let lumen = filter_lumen(stats)
-  let result = []
-  let used = []
-  let count = 0
+  let mut result = []
+  let mut used = []
+  let mut count = 0
   while count < n and count < len(lumen)
-    let best_idx = -1
-    let best_count = -1
-    let i = 0
+    let mut best_idx = -1
+    let mut best_count = -1
+    let mut i = 0
     while i < len(lumen)
       if not str_list_contains(used, to_string(i))
         let complexity = lumen[i].cell_defs + lumen[i].record_defs + lumen[i].enum_defs
@@ -1438,13 +1438,13 @@ end
 
 cell find_most_complex_rust(stats: list[FileStats], n: Int) -> list[FileStats]
   let rust = filter_rust(stats)
-  let result = []
-  let used = []
-  let count = 0
+  let mut result = []
+  let mut used = []
+  let mut count = 0
   while count < n and count < len(rust)
-    let best_idx = -1
-    let best_count = -1
-    let i = 0
+    let mut best_idx = -1
+    let mut best_count = -1
+    let mut i = 0
     while i < len(rust)
       if not str_list_contains(used, to_string(i))
         let complexity = rust[i].fn_defs + rust[i].struct_defs + rust[i].rust_enum_defs + rust[i].trait_defs
@@ -1470,18 +1470,18 @@ end
 ```lumen
 cell make_table(headers: list[String], rows: list[list[String]]) -> String
   let num_cols = len(headers)
-  let widths = []
-  let ci = 0
+  let mut widths = []
+  let mut ci = 0
   while ci < num_cols
     widths = append(widths, len(headers[ci]))
     ci = ci + 1
   end
 
-  let ri = 0
+  let mut ri = 0
   while ri < len(rows)
     let row = rows[ri]
-    let new_widths = []
-    let ci2 = 0
+    let mut new_widths = []
+    let mut ci2 = 0
     while ci2 < num_cols
       let cur = widths[ci2]
       if ci2 < len(row)
@@ -1495,30 +1495,30 @@ cell make_table(headers: list[String], rows: list[list[String]]) -> String
     ri = ri + 1
   end
 
-  let header_cells = []
-  let hi = 0
+  let mut header_cells = []
+  let mut hi = 0
   while hi < num_cols
     header_cells = append(header_cells, pad_right(headers[hi], widths[hi]))
     hi = hi + 1
   end
   let header_line = "| " + join(header_cells, " | ") + " |"
 
-  let sep_cells = []
-  let si = 0
+  let mut sep_cells = []
+  let mut si = 0
   while si < num_cols
     sep_cells = append(sep_cells, repeat_char("-", widths[si]))
     si = si + 1
   end
   let sep_line = "| " + join(sep_cells, " | ") + " |"
 
-  let lines = [header_line, sep_line]
-  let di = 0
+  let mut lines = [header_line, sep_line]
+  let mut di = 0
   while di < len(rows)
     let row = rows[di]
-    let cells = []
-    let ci3 = 0
+    let mut cells = []
+    let mut ci3 = 0
     while ci3 < num_cols
-      let val = ""
+      let mut val = ""
       if ci3 < len(row)
         val = row[ci3]
       end
@@ -1536,7 +1536,7 @@ cell make_bar(value: Int, max_value: Int, width: Int) -> String
   if max_value == 0
     return repeat_char(" ", width)
   end
-  let bar_len = (value * width) / max_value
+  let mut bar_len = (value * width) / max_value
   if bar_len > width
     bar_len = width
   end
@@ -1553,7 +1553,7 @@ end
 
 ```lumen
 cell generate_header_section() -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "==========================================================")
   lines = append(lines, "           LUMEN PROJECT SOURCE CODE ANALYSIS")
   lines = append(lines, "==========================================================")
@@ -1562,7 +1562,7 @@ cell generate_header_section() -> String
 end
 
 cell generate_summary_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  OVERALL SUMMARY")
   lines = append(lines, "----------------------------------------------------------")
@@ -1581,7 +1581,7 @@ cell generate_summary_section(stats: list[FileStats]) -> String
   lines = append(lines, "  Blank lines:           " + format_thousands(total_blank) + " (" + format_percent(total_blank, total_lines) + ")")
   lines = append(lines, "")
 
-  let avg_lines = 0
+  let mut avg_lines = 0
   if total_files > 0
     avg_lines = total_lines / total_files
   end
@@ -1592,7 +1592,7 @@ cell generate_summary_section(stats: list[FileStats]) -> String
 end
 
 cell generate_file_type_table(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  FILES BY TYPE")
   lines = append(lines, "----------------------------------------------------------")
@@ -1600,7 +1600,7 @@ cell generate_file_type_table(stats: list[FileStats]) -> String
 
   let types = get_file_types(stats)
   let headers = ["File Type", "Count", "Lines", "Code", "Comments", "Blank", "Code%"]
-  let rows = []
+  let mut rows = []
 
   for ft in types
     let filtered = filter_by_type(stats, ft)
@@ -1620,7 +1620,7 @@ cell generate_file_type_table(stats: list[FileStats]) -> String
 end
 
 cell generate_category_table(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  FILES BY CATEGORY")
   lines = append(lines, "----------------------------------------------------------")
@@ -1628,7 +1628,7 @@ cell generate_category_table(stats: list[FileStats]) -> String
 
   let cats = get_categories(stats)
   let headers = ["Category", "Files", "Total Lines", "Code Lines", "Pct of Total"]
-  let rows = []
+  let mut rows = []
   let grand_total = total_lines_all(stats)
 
   for cat in cats
@@ -1662,7 +1662,7 @@ cell lumen_construct_rows(lumen: list[FileStats]) -> list[list[String]]
   let tp = total_processes_all(lumen)
   let max_val = max_int(tc, max_int(tr, max_int(te, max_int(ti, tp))))
 
-  let rows = []
+  let mut rows = []
   rows = append(rows, make_construct_row("cell definitions", tc, max_val))
   rows = append(rows, make_construct_row("record definitions", tr, max_val))
   rows = append(rows, make_construct_row("enum definitions", te, max_val))
@@ -1678,7 +1678,7 @@ cell lumen_construct_rows2(lumen: list[FileStats], max_val: Int) -> list[list[St
   let tx = total_externs_all(lumen)
   let tt = total_tests_all(lumen)
 
-  let rows = []
+  let mut rows = []
   rows = append(rows, make_construct_row("effect declarations", te, max_val))
   rows = append(rows, make_construct_row("grant statements", tg, max_val))
   rows = append(rows, make_construct_row("type aliases", ta, max_val))
@@ -1688,7 +1688,7 @@ cell lumen_construct_rows2(lumen: list[FileStats], max_val: Int) -> list[list[St
 end
 
 cell generate_lumen_constructs_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  LUMEN LANGUAGE CONSTRUCTS")
   lines = append(lines, "----------------------------------------------------------")
@@ -1703,7 +1703,7 @@ cell generate_lumen_constructs_section(stats: list[FileStats]) -> String
   let max_val = max_int(tc, max_int(tr, max_int(te, max_int(ti, tp))))
 
   let headers = ["Construct", "Count", "Bar"]
-  let rows = lumen_construct_rows(lumen)
+  let mut rows = lumen_construct_rows(lumen)
   let rows2 = lumen_construct_rows2(lumen, max_val)
   for r in rows2
     rows = append(rows, r)
@@ -1716,7 +1716,7 @@ cell generate_lumen_constructs_section(stats: list[FileStats]) -> String
 end
 
 cell generate_lumen_file_detail_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  LUMEN FILE DETAILS")
   lines = append(lines, "----------------------------------------------------------")
@@ -1731,10 +1731,10 @@ cell generate_lumen_file_detail_section(stats: list[FileStats]) -> String
   end
 
   let headers = ["File", "Lines", "Code", "Cells", "Records", "Enums", "Imports"]
-  let rows = []
+  let mut rows = []
 
   for s in lumen
-    let short_path = s.path
+    let mut short_path = s.path
     if len(short_path) > 45
       short_path = truncate_string(short_path, 45)
     end
@@ -1767,7 +1767,7 @@ cell rust_construct_rows(rust: list[FileStats]) -> list[list[String]]
   let ti = total_impls_all(rust)
   let max_val = max_int(tf, max_int(ts, max_int(te, max_int(tt, ti))))
 
-  let rows = []
+  let mut rows = []
   rows = append(rows, make_construct_row("fn definitions", tf, max_val))
   rows = append(rows, make_construct_row("struct definitions", ts, max_val))
   rows = append(rows, make_construct_row("enum definitions", te, max_val))
@@ -1782,7 +1782,7 @@ cell rust_construct_rows2(rust: list[FileStats], max_val: Int) -> list[list[Stri
   let tm = total_mods_all(rust)
   let tma = total_macros_all(rust)
 
-  let rows = []
+  let mut rows = []
   rows = append(rows, make_construct_row("#[test] annotations", tt, max_val))
   rows = append(rows, make_construct_row("use statements", tu, max_val))
   rows = append(rows, make_construct_row("mod declarations", tm, max_val))
@@ -1791,7 +1791,7 @@ cell rust_construct_rows2(rust: list[FileStats], max_val: Int) -> list[list[Stri
 end
 
 cell generate_rust_constructs_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  RUST LANGUAGE CONSTRUCTS")
   lines = append(lines, "----------------------------------------------------------")
@@ -1806,7 +1806,7 @@ cell generate_rust_constructs_section(stats: list[FileStats]) -> String
   let max_val = max_int(tf, max_int(ts, max_int(te, max_int(tt, ti))))
 
   let headers = ["Construct", "Count", "Bar"]
-  let rows = rust_construct_rows(rust)
+  let mut rows = rust_construct_rows(rust)
   let rows2 = rust_construct_rows2(rust, max_val)
   for r in rows2
     rows = append(rows, r)
@@ -1819,7 +1819,7 @@ cell generate_rust_constructs_section(stats: list[FileStats]) -> String
 end
 
 cell generate_rust_crate_breakdown(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  RUST CRATE BREAKDOWN")
   lines = append(lines, "----------------------------------------------------------")
@@ -1827,10 +1827,10 @@ cell generate_rust_crate_breakdown(stats: list[FileStats]) -> String
 
   let crates = ["lumen-compiler", "lumen-vm", "lumen-runtime", "lumen-cli", "lumen-lsp"]
   let headers = ["Crate", "Files", "Lines", "Code", "Fns", "Structs", "Enums", "Traits"]
-  let rows = []
+  let mut rows = []
 
   for crate_name in crates
-    let crate_stats = []
+    let mut crate_stats = []
     for s in stats
       if contains(s.path, crate_name) and s.file_type == "rust"
         crate_stats = append(crate_stats, s)
@@ -1868,7 +1868,7 @@ end
 
 ```lumen
 cell generate_top_files_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  TOP 15 LARGEST FILES")
   lines = append(lines, "----------------------------------------------------------")
@@ -1876,12 +1876,12 @@ cell generate_top_files_section(stats: list[FileStats]) -> String
 
   let top = find_largest_files(stats, 15)
   let headers = ["Rank", "File", "Lines", "Code", "Type"]
-  let rows = []
+  let mut rows = []
 
-  let i = 0
+  let mut i = 0
   while i < len(top)
     let s = top[i]
-    let short_path = s.path
+    let mut short_path = s.path
     if len(short_path) > 50
       short_path = truncate_string(short_path, 50)
     end
@@ -1902,7 +1902,7 @@ cell generate_top_files_section(stats: list[FileStats]) -> String
 end
 
 cell generate_top_lumen_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  TOP 10 MOST COMPLEX LUMEN FILES")
   lines = append(lines, "----------------------------------------------------------")
@@ -1917,12 +1917,12 @@ cell generate_top_lumen_section(stats: list[FileStats]) -> String
   end
 
   let headers = ["Rank", "File", "Cells", "Records", "Enums", "Total Defs"]
-  let rows = []
+  let mut rows = []
 
-  let i = 0
+  let mut i = 0
   while i < len(top)
     let s = top[i]
-    let short_path = s.path
+    let mut short_path = s.path
     if len(short_path) > 45
       short_path = truncate_string(short_path, 45)
     end
@@ -1945,7 +1945,7 @@ cell generate_top_lumen_section(stats: list[FileStats]) -> String
 end
 
 cell generate_top_rust_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  TOP 10 MOST COMPLEX RUST FILES")
   lines = append(lines, "----------------------------------------------------------")
@@ -1960,12 +1960,12 @@ cell generate_top_rust_section(stats: list[FileStats]) -> String
   end
 
   let headers = ["Rank", "File", "Fns", "Structs", "Enums", "Traits", "Total"]
-  let rows = []
+  let mut rows = []
 
-  let i = 0
+  let mut i = 0
   while i < len(top)
     let s = top[i]
-    let short_path = s.path
+    let mut short_path = s.path
     if len(short_path) > 45
       short_path = truncate_string(short_path, 45)
     end
@@ -2022,7 +2022,7 @@ cell compute_avg_cell_size(stats: list[FileStats]) -> Int
 end
 
 cell compute_max_line_len(stats: list[FileStats]) -> Int
-  let max_len = 0
+  let mut max_len = 0
   for s in stats
     if s.max_line_length > max_len
       max_len = s.max_line_length
@@ -2032,8 +2032,8 @@ cell compute_max_line_len(stats: list[FileStats]) -> Int
 end
 
 cell find_longest_line_file(stats: list[FileStats]) -> String
-  let max_len = 0
-  let max_path = ""
+  let mut max_len = 0
+  let mut max_path = ""
   for s in stats
     if s.max_line_length > max_len
       max_len = s.max_line_length
@@ -2044,7 +2044,7 @@ cell find_longest_line_file(stats: list[FileStats]) -> String
 end
 
 cell generate_quality_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  CODE QUALITY METRICS")
   lines = append(lines, "----------------------------------------------------------")
@@ -2074,7 +2074,7 @@ end
 
 cell generate_quality_comparison_table(stats: list[FileStats], overall_ratio: String) -> String
   let headers = ["Metric", "Rust", "Lumen", "All"]
-  let rows = []
+  let mut rows = []
 
   let rust = filter_rust(stats)
   let lumen = filter_lumen(stats)
@@ -2119,7 +2119,7 @@ end
 
 ```lumen
 cell count_files_over_threshold(stats: list[FileStats], threshold: Int) -> Int
-  let count = 0
+  let mut count = 0
   for s in stats
     if s.total_lines > threshold
       count = count + 1
@@ -2129,7 +2129,7 @@ cell count_files_over_threshold(stats: list[FileStats], threshold: Int) -> Int
 end
 
 cell count_files_with_no_comments(stats: list[FileStats]) -> Int
-  let count = 0
+  let mut count = 0
   for s in stats
     if s.comment_lines == 0 and s.code_lines > 10
       count = count + 1
@@ -2139,7 +2139,7 @@ cell count_files_with_no_comments(stats: list[FileStats]) -> Int
 end
 
 cell count_files_with_long_lines(stats: list[FileStats], threshold: Int) -> Int
-  let count = 0
+  let mut count = 0
   for s in stats
     if s.max_line_length > threshold
       count = count + 1
@@ -2159,7 +2159,7 @@ cell health_status(count: Int, warn_threshold: Int, high_threshold: Int) -> Stri
 end
 
 cell generate_health_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  CODEBASE HEALTH INDICATORS")
   lines = append(lines, "----------------------------------------------------------")
@@ -2174,7 +2174,7 @@ cell generate_health_section(stats: list[FileStats]) -> String
   let long_lines_200 = count_files_with_long_lines(stats, 200)
 
   let headers = ["Indicator", "Count", "Status"]
-  let rows = []
+  let mut rows = []
 
   rows = append(rows, ["Files > 500 lines", to_string(large_500), "INFO"])
   rows = append(rows, ["Files > 1000 lines", to_string(large_1000), health_status(large_1000, 20, 50)])
@@ -2195,13 +2195,13 @@ end
 
 ```lumen
 cell compute_size_buckets(stats: list[FileStats]) -> list[Int]
-  let b0 = 0
-  let b1 = 0
-  let b2 = 0
-  let b3 = 0
-  let b4 = 0
-  let b5 = 0
-  let b6 = 0
+  let mut b0 = 0
+  let mut b1 = 0
+  let mut b2 = 0
+  let mut b3 = 0
+  let mut b4 = 0
+  let mut b5 = 0
+  let mut b6 = 0
 
   for s in stats
     let tl = s.total_lines
@@ -2235,7 +2235,7 @@ cell compute_size_buckets(stats: list[FileStats]) -> list[Int]
 end
 
 cell max_of_buckets(buckets: list[Int]) -> Int
-  let result = 0
+  let mut result = 0
   for b in buckets
     if b > result
       result = b
@@ -2245,7 +2245,7 @@ cell max_of_buckets(buckets: list[Int]) -> Int
 end
 
 cell generate_size_distribution(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  FILE SIZE DISTRIBUTION")
   lines = append(lines, "----------------------------------------------------------")
@@ -2257,9 +2257,9 @@ cell generate_size_distribution(stats: list[FileStats]) -> String
 
   let labels = ["0-50 lines", "51-100 lines", "101-250 lines", "251-500 lines", "501-1000 lines", "1001-2000 lines", "2000+ lines"]
   let headers = ["Size Range", "Count", "Pct", "Distribution"]
-  let rows = []
+  let mut rows = []
 
-  let i = 0
+  let mut i = 0
   while i < len(labels)
     let count = buckets[i]
     rows = append(rows, [labels[i], to_string(count), format_percent(count, total), make_bar(count, max_bucket, 25)])
@@ -2277,7 +2277,7 @@ end
 
 ```lumen
 cell compute_file_complexity(s: FileStats) -> Int
-  let score = 0
+  let mut score = 0
   score = score + s.cell_defs * 3
   score = score + s.record_defs * 2
   score = score + s.enum_defs * 2
@@ -2304,19 +2304,19 @@ cell compute_file_complexity(s: FileStats) -> Int
 end
 
 cell generate_complexity_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  COMPLEXITY SCORES (Top 15)")
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "")
 
-  let result = []
-  let used = []
-  let count = 0
+  let mut result = []
+  let mut used = []
+  let mut count = 0
   while count < 15 and count < len(stats)
-    let best_idx = -1
-    let best_score = -1
-    let i = 0
+    let mut best_idx = -1
+    let mut best_score = -1
+    let mut i = 0
     while i < len(stats)
       if not str_list_contains(used, to_string(i))
         let score = compute_file_complexity(stats[i])
@@ -2335,12 +2335,12 @@ cell generate_complexity_section(stats: list[FileStats]) -> String
   end
 
   let headers = ["Rank", "File", "Score", "Lines", "Type"]
-  let rows = []
+  let mut rows = []
 
-  let i = 0
+  let mut i = 0
   while i < len(result)
     let s = result[i]
-    let short_path = s.path
+    let mut short_path = s.path
     if len(short_path) > 45
       short_path = truncate_string(short_path, 45)
     end
@@ -2372,7 +2372,7 @@ cell generate_lumen_project_stats(stats: list[FileStats]) -> String
   let lumen_records = total_records_all(lumen)
   let lumen_enums = total_enums_all(lumen)
 
-  let lines = []
+  let mut lines = []
   lines = append(lines, "  LUMEN LANGUAGE STATS:")
   lines = append(lines, "    Source files:     " + to_string(len(lumen)))
   lines = append(lines, "    Code lines:       " + format_thousands(lumen_code))
@@ -2390,7 +2390,7 @@ cell generate_rust_project_stats(stats: list[FileStats]) -> String
   let rust_structs = total_structs_all(rust)
   let rust_enums = total_rust_enums_all(rust)
 
-  let lines = []
+  let mut lines = []
   lines = append(lines, "  RUST IMPLEMENTATION STATS:")
   lines = append(lines, "    Source files:     " + to_string(len(rust)))
   lines = append(lines, "    Code lines:       " + format_thousands(rust_code))
@@ -2408,7 +2408,7 @@ cell generate_ratio_stats(stats: list[FileStats]) -> String
   let rust_code = total_code_all(rust)
   let total_code = total_code_all(stats)
 
-  let lines = []
+  let mut lines = []
   lines = append(lines, "  RATIO:")
   if lumen_code > 0
     lines = append(lines, "    Rust:Lumen code ratio:  " + format_ratio(rust_code, lumen_code) + ":1")
@@ -2422,7 +2422,7 @@ cell generate_ratio_stats(stats: list[FileStats]) -> String
 end
 
 cell generate_project_stats(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  PROJECT STATISTICS")
   lines = append(lines, "----------------------------------------------------------")
@@ -2440,13 +2440,13 @@ end
 
 ```lumen
 cell generate_tools_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  LUMEN DOGFOOD TOOLS ANALYSIS")
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "")
 
-  let tools = []
+  let mut tools = []
   for s in stats
     if contains(s.path, "tools/") and s.file_type == "lumen-md"
       tools = append(tools, s)
@@ -2460,10 +2460,10 @@ cell generate_tools_section(stats: list[FileStats]) -> String
   end
 
   let headers = ["Tool", "Lines", "Code", "Cells", "Records"]
-  let rows = []
+  let mut rows = []
 
   for s in tools
-    let name = s.path
+    let mut name = s.path
     if contains(name, "/")
       let parts = split(name, "/")
       name = parts[len(parts) - 1]
@@ -2498,13 +2498,13 @@ end
 
 ```lumen
 cell generate_examples_section(stats: list[FileStats]) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  EXAMPLES ANALYSIS")
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "")
 
-  let examples = []
+  let mut examples = []
   for s in stats
     if contains(s.path, "examples/")
       examples = append(examples, s)
@@ -2518,10 +2518,10 @@ cell generate_examples_section(stats: list[FileStats]) -> String
   end
 
   let headers = ["Example", "Lines", "Code", "Cells", "Records", "Enums"]
-  let rows = []
+  let mut rows = []
 
   for s in examples
-    let name = s.path
+    let mut name = s.path
     if contains(name, "/")
       let parts = split(name, "/")
       name = parts[len(parts) - 1]
@@ -2556,7 +2556,7 @@ end
 
 ```lumen
 cell generate_footer(elapsed_ms: Int) -> String
-  let lines = []
+  let mut lines = []
   lines = append(lines, "----------------------------------------------------------")
   lines = append(lines, "  ANALYSIS COMPLETE")
   lines = append(lines, "----------------------------------------------------------")

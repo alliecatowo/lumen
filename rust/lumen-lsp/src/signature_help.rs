@@ -35,7 +35,7 @@ pub fn build_signature_help(
 fn find_call_context(text: &str, position: Position) -> Option<(String, u32)> {
     let lines: Vec<&str> = text.lines().collect();
     let line = lines.get(position.line as usize)?;
-    let col = (position.character as usize).min(line.len());
+    let col = crate::position::utf16_col_to_byte(line, position.character);
 
     let prefix = &line[..col];
 
@@ -216,4 +216,79 @@ fn build_builtin_signature(name: &str, active_param: u32) -> Option<SignatureHel
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::position::testing::*;
+    use lsp_types::{
+        SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams,
+        WorkDoneProgressParams,
+    };
+
+    fn help_at(
+        text: &str,
+        program: Option<&Program>,
+        line: u32,
+        character: u32,
+    ) -> Option<SignatureHelp> {
+        build_signature_help(
+            SignatureHelpParams {
+                context: None,
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: "file:///t.lm".parse().unwrap(),
+                    },
+                    position: Position { line, character },
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            text,
+            program,
+        )
+    }
+
+    #[test]
+    fn signature_help_inside_a_call_after_non_ascii_text() {
+        let program = parse_program(UNICODE_DOC).expect("parses");
+        // Cursor on the `)` that closes `greet("ü")`.
+        let col = col_of(UNICODE_DOC, 6, "\")", 0);
+        let help = help_at(UNICODE_DOC, Some(&program), 6, col).expect("signature for greet");
+        assert!(
+            help.signatures[0].label.contains("greet"),
+            "{:?}",
+            help.signatures[0].label
+        );
+        assert_eq!(help.active_parameter, Some(0));
+    }
+
+    #[test]
+    fn call_context_counts_arguments_past_non_ascii_text() {
+        let line = "foo(\"é😀\", 1, ";
+        let col = utf16_len_for_test(line);
+        let ctx = find_call_context(
+            line,
+            Position {
+                line: 0,
+                character: col,
+            },
+        )
+        .expect("call");
+        assert_eq!(ctx, ("foo".to_string(), 2));
+    }
+
+    fn utf16_len_for_test(s: &str) -> u32 {
+        crate::position::utf16_len(s)
+    }
+
+    #[test]
+    fn signature_help_never_panics_on_any_column() {
+        let program = parse_program(UNICODE_DOC).expect("parses");
+        for line in 0..UNICODE_DOC.lines().count() as u32 + 1 {
+            for col in 0..60 {
+                let _ = help_at(UNICODE_DOC, Some(&program), line, col);
+            }
+        }
+    }
 }

@@ -46,7 +46,7 @@ cell is_prime(n: Int) -> Bool
     return false
   end
 
-  let i = 3
+  let mut i = 3
   while i * i <= n
     if n % i == 0
       return false
@@ -64,8 +64,8 @@ cell power(base: Int, exp: Int) -> Int
     return 0
   end
 
-  let result = 1
-  let i = 0
+  let mut result = 1
+  let mut i = 0
   while i < exp
     result = result * base
     i = i + 1
@@ -92,7 +92,7 @@ cell sum_range(start: Int, end_val: Int) -> Int
   if start > end_val
     return 0
   end
-  let sum = 0
+  let mut sum = 0
   for i in range(start, end_val + 1)
     sum = sum + i
   end
@@ -103,8 +103,8 @@ cell count_digits(n: Int) -> Int
   if n == 0
     return 1
   end
-  let num = abs(n)
-  let count = 0
+  let mut num = abs(n)
+  let mut count = 0
   while num > 0
     count = count + 1
     num = num / 10
@@ -113,8 +113,8 @@ cell count_digits(n: Int) -> Int
 end
 
 cell reverse_number(n: Int) -> Int
-  let num = abs(n)
-  let result = 0
+  let mut num = abs(n)
+  let mut result = 0
   while num > 0
     let digit = num % 10
     result = result * 10 + digit

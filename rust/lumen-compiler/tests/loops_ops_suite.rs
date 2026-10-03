@@ -490,7 +490,7 @@ end"#;
 #[test]
 fn variadic_param_compiles() {
     let src = r#"cell sum_all(...nums: Int) -> Int
-  let total = 0
+  let mut total = 0
   for n in nums
     total = total + n
   end
@@ -508,7 +508,7 @@ end"#;
 fn variadic_param_e2e() {
     use lumen_runtime::vm::vm::VM;
     let src = r#"cell sum_all(...nums: Int) -> Int
-  let total = 0
+  let mut total = 0
   for n in nums
     total = total + n
   end
@@ -529,7 +529,7 @@ end"#;
 fn variadic_param_empty_args() {
     use lumen_runtime::vm::vm::VM;
     let src = r#"cell count(...items: String) -> Int
-  let n = 0
+  let mut n = 0
   for _ in items
     n = n + 1
   end
@@ -550,8 +550,8 @@ end"#;
 fn variadic_with_fixed_params() {
     use lumen_runtime::vm::vm::VM;
     let src = r#"cell format_list(sep: String, ...items: String) -> String
-  let result = ""
-  let first = true
+  let mut result = ""
+  let mut first = true
   for item in items
     if first
       result = item
@@ -569,6 +569,6 @@ end"#;
     let module = compile_to_lir(src);
     let mut vm = VM::new();
     vm.load(module);
-    let result = vm.execute("main", vec![]).expect("vm run failed");
+    let mut result = vm.execute("main", vec![]).expect("vm run failed");
     assert_eq!(result.to_string(), "a, b, c");
 }

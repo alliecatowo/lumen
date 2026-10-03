@@ -196,29 +196,7 @@ fn get_builtin_hover(name: &str) -> Option<Hover> {
 }
 
 fn extract_word_at_position(text: &str, position: Position) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines.get(position.line as usize)?;
-    let char_pos = position.character as usize;
-
-    if char_pos > line.len() {
-        return None;
-    }
-
-    let start = line[..char_pos]
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    let end = line[char_pos..]
-        .find(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| char_pos + i)
-        .unwrap_or(line.len());
-
-    if start >= end {
-        return None;
-    }
-
-    Some(line[start..end].to_string())
+    crate::position::word_at(text, position)
 }
 
 pub fn type_expr_to_string(ty: &lumen_compiler::compiler::ast::TypeExpr) -> String {
@@ -273,6 +251,52 @@ pub fn type_expr_to_string(ty: &lumen_compiler::compiler::ast::TypeExpr) -> Stri
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}[{}]", name, args_str)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::position::testing::*;
+    use lsp_types::{TextDocumentIdentifier, TextDocumentPositionParams, WorkDoneProgressParams};
+
+    fn hover_at(text: &str, program: Option<&Program>, line: u32, character: u32) -> Option<Hover> {
+        build_hover(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: "file:///t.lm".parse().unwrap(),
+                    },
+                    position: Position { line, character },
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            text,
+            program,
+        )
+    }
+
+    #[test]
+    fn hover_after_non_ascii_text_on_the_same_line() {
+        let program = parse_program(UNICODE_DOC).expect("parses");
+        // `greet` follows an `é` (2 bytes, 1 UTF-16 unit) on line 6.
+        let col = col_of(UNICODE_DOC, 6, "greet", 2);
+        let hover = hover_at(UNICODE_DOC, Some(&program), 6, col).expect("hover on greet");
+        let HoverContents::Markup(m) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(m.value.contains("greet"), "{}", m.value);
+    }
+
+    #[test]
+    fn hover_never_panics_on_any_column_of_a_non_ascii_line() {
+        let program = parse_program(UNICODE_DOC).expect("parses");
+        for line in 0..UNICODE_DOC.lines().count() as u32 + 1 {
+            for col in 0..60 {
+                let _ = hover_at(UNICODE_DOC, Some(&program), line, col);
+                let _ = hover_at(UNICODE_DOC, None, line, col);
+            }
         }
     }
 }

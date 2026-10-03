@@ -82,7 +82,7 @@ cell clamp(value: Int, lo: Int, hi: Int) -> Int
 end
 
 cell sum_list(items: list[Int]) -> Int
-  let total = 0
+  let mut total = 0
   for item in items
     total = total + item
   end
@@ -90,7 +90,7 @@ cell sum_list(items: list[Int]) -> Int
 end
 
 cell filter_positive(items: list[Int]) -> list[Int]
-  let result = []
+  let mut result = []
   for item in items
     if item > 0
       result = append(result, item)
@@ -100,7 +100,7 @@ cell filter_positive(items: list[Int]) -> list[Int]
 end
 
 cell map_double(items: list[Int]) -> list[Int]
-  let result = []
+  let mut result = []
   for item in items
     result = append(result, item * 2)
   end
@@ -117,7 +117,7 @@ cell contains_value(items: list[Int], target: Int) -> Bool
 end
 
 cell count_matching(items: list[Int], target: Int) -> Int
-  let count = 0
+  let mut count = 0
   for item in items
     if item == target
       count = count + 1
@@ -127,8 +127,8 @@ cell count_matching(items: list[Int], target: Int) -> Int
 end
 
 cell reverse_list(items: list[Int]) -> list[Int]
-  let result = []
-  let i = len(items) - 1
+  let mut result = []
+  let mut i = len(items) - 1
   while i >= 0
     result = append(result, items[i])
     i = i - 1
@@ -141,9 +141,9 @@ cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
   if n == 0
     return [value]
   end
-  let result = []
-  let inserted = false
-  let i = 0
+  let mut result = []
+  let mut inserted = false
+  let mut i = 0
   while i < n
     let curr = sorted[i]
     if not inserted and value <= curr
@@ -160,7 +160,7 @@ cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
 end
 
 cell insertion_sort(items: list[Int]) -> list[Int]
-  let sorted = []
+  let mut sorted = []
   for item in items
     sorted = insert_sorted(sorted, item)
   end
@@ -172,7 +172,7 @@ cell is_sorted(items: list[Int]) -> Bool
   if n <= 1
     return true
   end
-  let i = 0
+  let mut i = 0
   while i < n - 1
     if items[i] > items[i + 1]
       return false

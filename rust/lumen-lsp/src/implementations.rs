@@ -671,29 +671,7 @@ fn span_to_location(span: &Span, uri: &Uri) -> Location {
 }
 
 fn extract_word_at_position(text: &str, position: Position) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines.get(position.line as usize)?;
-    let char_pos = position.character as usize;
-
-    if char_pos > line.len() {
-        return None;
-    }
-
-    let start = line[..char_pos]
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    let end = line[char_pos..]
-        .find(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| char_pos + i)
-        .unwrap_or(line.len());
-
-    if start >= end {
-        return None;
-    }
-
-    Some(line[start..end].to_string())
+    crate::position::word_at(text, position)
 }
 
 #[cfg(test)]

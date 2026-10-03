@@ -209,8 +209,8 @@ cell vec2_eq(a: Vec2, b: Vec2) -> Bool
 end
 
 cell vec2_manhattan(a: Vec2, b: Vec2) -> Int
-  let dx = a.x - b.x
-  let dy = a.y - b.y
+  let mut dx = a.x - b.x
+  let mut dy = a.y - b.y
   if dx < 0
     dx = 0 - dx
   end
@@ -274,9 +274,9 @@ cell color_blend(a: Color, b: Color) -> Color
 end
 
 cell color_brighten(c: Color, amount: Int) -> Color
-  let r = c.r + amount
-  let g = c.g + amount
-  let b = c.b + amount
+  let mut r = c.r + amount
+  let mut g = c.g + amount
+  let mut b = c.b + amount
   if r > 255
     r = 255
   end
@@ -290,9 +290,9 @@ cell color_brighten(c: Color, amount: Int) -> Color
 end
 
 cell color_darken(c: Color, amount: Int) -> Color
-  let r = c.r - amount
-  let g = c.g - amount
-  let b = c.b - amount
+  let mut r = c.r - amount
+  let mut g = c.g - amount
+  let mut b = c.b - amount
   if r < 0
     r = 0
   end
@@ -493,9 +493,9 @@ cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
   if n == 0
     return [value]
   end
-  let result = []
-  let inserted = false
-  let i = 0
+  let mut result = []
+  let mut inserted = false
+  let mut i = 0
   while i < n
     let curr = sorted[i]
     if not inserted and value <= curr
@@ -512,7 +512,7 @@ cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
 end
 
 cell insertion_sort(items: list[Int]) -> list[Int]
-  let sorted = []
+  let mut sorted = []
   for item in items
     sorted = insert_sorted(sorted, item)
   end
@@ -524,12 +524,12 @@ cell selection_sort(items: list[Int]) -> list[Int]
   if n <= 1
     return items
   end
-  let sorted = []
-  let remaining = items
+  let mut sorted = []
+  let mut remaining = items
   while len(remaining) > 0
-    let min_val = remaining[0]
-    let min_idx = 0
-    let j = 1
+    let mut min_val = remaining[0]
+    let mut min_idx = 0
+    let mut j = 1
     while j < len(remaining)
       if remaining[j] < min_val
         min_val = remaining[j]
@@ -538,9 +538,9 @@ cell selection_sort(items: list[Int]) -> list[Int]
       j = j + 1
     end
     sorted = append(sorted, min_val)
-    let new_remaining = []
-    let k = 0
-    let removed = false
+    let mut new_remaining = []
+    let mut k = 0
+    let mut removed = false
     while k < len(remaining)
       if k == min_idx and not removed
         removed = true
@@ -559,14 +559,14 @@ cell bubble_pass(items: list[Int]) -> list[Int]
   if n <= 1
     return items
   end
-  let result = items
-  let i = 0
+  let mut result = items
+  let mut i = 0
   while i < n - 1
     if result[i] > result[i + 1]
       let temp_a = result[i]
       let temp_b = result[i + 1]
-      let new_list = []
-      let j = 0
+      let mut new_list = []
+      let mut j = 0
       while j < n
         if j == i
           new_list = append(new_list, temp_b)
@@ -591,7 +591,7 @@ cell is_sorted(items: list[Int]) -> Bool
   if n <= 1
     return true
   end
-  let i = 0
+  let mut i = 0
   while i < n - 1
     if items[i] > items[i + 1]
       return false
@@ -654,7 +654,7 @@ cell is_prime(n: Int) -> Bool
   if n % 2 == 0
     return false
   end
-  let i = 3
+  let mut i = 3
   while i * i <= n
     if n % i == 0
       return false
@@ -665,8 +665,8 @@ cell is_prime(n: Int) -> Bool
 end
 
 cell count_primes(limit: Int) -> Int
-  let count = 0
-  let n = 2
+  let mut count = 0
+  let mut n = 2
   while n < limit
     if is_prime(n)
       count = count + 1
@@ -677,8 +677,8 @@ cell count_primes(limit: Int) -> Int
 end
 
 cell sum_divisors(n: Int) -> Int
-  let total = 0
-  let i = 1
+  let mut total = 0
+  let mut i = 1
   while i <= n / 2
     if n % i == 0
       total = total + i
@@ -693,8 +693,8 @@ cell is_perfect(n: Int) -> Bool
 end
 
 cell collatz_length(n: Int) -> Int
-  let count = 0
-  let val = n
+  let mut count = 0
+  let mut val = n
   while val != 1
     if val % 2 == 0
       val = val / 2
@@ -736,8 +736,8 @@ end
 # ════════════════════════════════════════════════════════════════════
 
 cell repeat_str(s: String, n: Int) -> String
-  let result = ""
-  let i = 0
+  let mut result = ""
+  let mut i = 0
   while i < n
     result = result + s
     i = i + 1
@@ -746,8 +746,8 @@ cell repeat_str(s: String, n: Int) -> String
 end
 
 cell count_char(s: String, ch: String) -> Int
-  let count = 0
-  let i = 0
+  let mut count = 0
+  let mut i = 0
   while i < len(s)
     if s[i] == ch
       count = count + 1
@@ -758,8 +758,8 @@ cell count_char(s: String, ch: String) -> Int
 end
 
 cell reverse_string(s: String) -> String
-  let result = ""
-  let i = len(s) - 1
+  let mut result = ""
+  let mut i = len(s) - 1
   while i >= 0
     result = result + s[i]
     i = i - 1
@@ -801,8 +801,8 @@ cell truncate(s: String, max_len: Int) -> String
   if len(s) <= max_len
     return s
   end
-  let result = ""
-  let i = 0
+  let mut result = ""
+  let mut i = 0
   while i < max_len - 3
     result = result + s[i]
     i = i + 1
@@ -815,7 +815,7 @@ end
 # ════════════════════════════════════════════════════════════════════
 
 cell sum_list(items: list[Int]) -> Int
-  let total = 0
+  let mut total = 0
   for item in items
     total = total + item
   end
@@ -823,7 +823,7 @@ cell sum_list(items: list[Int]) -> Int
 end
 
 cell product_list(items: list[Int]) -> Int
-  let total = 1
+  let mut total = 1
   for item in items
     total = total * item
   end
@@ -831,7 +831,7 @@ cell product_list(items: list[Int]) -> Int
 end
 
 cell max_list(items: list[Int]) -> Int
-  let best = items[0]
+  let mut best = items[0]
   for item in items
     if item > best
       best = item
@@ -841,7 +841,7 @@ cell max_list(items: list[Int]) -> Int
 end
 
 cell min_list(items: list[Int]) -> Int
-  let best = items[0]
+  let mut best = items[0]
   for item in items
     if item < best
       best = item
@@ -851,7 +851,7 @@ cell min_list(items: list[Int]) -> Int
 end
 
 cell count_if(items: list[Int], threshold: Int) -> Int
-  let count = 0
+  let mut count = 0
   for item in items
     if item > threshold
       count = count + 1
@@ -861,7 +861,7 @@ cell count_if(items: list[Int], threshold: Int) -> Int
 end
 
 cell filter_range(items: list[Int], lo: Int, hi: Int) -> list[Int]
-  let result = []
+  let mut result = []
   for item in items
     if item >= lo and item <= hi
       result = append(result, item)
@@ -871,7 +871,7 @@ cell filter_range(items: list[Int], lo: Int, hi: Int) -> list[Int]
 end
 
 cell map_square(items: list[Int]) -> list[Int]
-  let result = []
+  let mut result = []
   for item in items
     result = append(result, item * item)
   end
@@ -879,7 +879,7 @@ cell map_square(items: list[Int]) -> list[Int]
 end
 
 cell take_while_positive(items: list[Int]) -> list[Int]
-  let result = []
+  let mut result = []
   for item in items
     if item <= 0
       break
@@ -890,12 +890,12 @@ cell take_while_positive(items: list[Int]) -> list[Int]
 end
 
 cell zip_sum(a: list[Int], b: list[Int]) -> list[Int]
-  let result = []
-  let n = len(a)
+  let mut result = []
+  let mut n = len(a)
   if len(b) < n
     n = len(b)
   end
-  let i = 0
+  let mut i = 0
   while i < n
     result = append(result, a[i] + b[i])
     i = i + 1
@@ -904,8 +904,8 @@ cell zip_sum(a: list[Int], b: list[Int]) -> list[Int]
 end
 
 cell reverse_list(items: list[Int]) -> list[Int]
-  let result = []
-  let i = len(items) - 1
+  let mut result = []
+  let mut i = len(items) - 1
   while i >= 0
     result = append(result, items[i])
     i = i - 1
@@ -914,9 +914,9 @@ cell reverse_list(items: list[Int]) -> list[Int]
 end
 
 cell deduplicate(items: list[Int]) -> list[Int]
-  let result = []
+  let mut result = []
   for item in items
-    let found = false
+    let mut found = false
     for existing in result
       if existing == item
         found = true
@@ -931,9 +931,9 @@ cell deduplicate(items: list[Int]) -> list[Int]
 end
 
 cell chunk_list(items: list[Int], size: Int) -> list[list[Int]]
-  let result = []
-  let chunk = []
-  let count = 0
+  let mut result = []
+  let mut chunk = []
+  let mut count = 0
   for item in items
     chunk = append(chunk, item)
     count = count + 1
@@ -1182,10 +1182,10 @@ cell is_alive(p: Particle) -> Bool
 end
 
 cell simulate_particles(particles: list[Particle], steps: Int) -> list[Particle]
-  let current = particles
-  let idx = 0
+  let mut current = particles
+  let mut idx = 0
   while idx < steps
-    let next = []
+    let mut next = []
     for p in current
       let updated = update_particle(p)
       if is_alive(updated)

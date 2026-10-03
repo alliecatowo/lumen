@@ -142,13 +142,44 @@ pub fn format_lm_source(content: &str) -> String {
     output
 }
 
-/// Format Lumen code using AST-based pretty printing
-pub fn format_lumen_code(code: &str) -> String {
-    if code.trim().is_empty() {
-        return String::new();
+/// Render a float literal so it stays a float (`0.0`, not `0`).
+fn fmt_float(f: f64) -> String {
+    let s = f.to_string();
+    if f.is_finite() && !s.contains('.') && !s.contains('e') && !s.contains('E') {
+        format!("{}.0", s)
+    } else {
+        s
     }
+}
 
-    // Try to parse the code
+/// True if the code has a `#` or `//` comment outside string literals. The
+/// pretty-printer works from the AST, which has no comments, so formatting such
+/// code would silently delete them.
+fn contains_comment(code: &str) -> bool {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut prev = '\0';
+    for c in code.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c == '#' || (c == '/' && prev == '/') {
+            return true;
+        }
+        prev = c;
+    }
+    false
+}
+
+/// Parse and pretty-print `code`; returns the output and the number of top-level items.
+fn pretty_print(code: &str) -> Option<(String, usize)> {
     let extracted = extract_blocks(&format!("```lumen\n{}\n```", code));
 
     let mut full_code = String::new();
@@ -158,30 +189,18 @@ pub fn format_lumen_code(code: &str) -> String {
         }
         full_code.push_str(&block.code);
     }
-
     if full_code.is_empty() {
-        return code.to_string();
+        return None;
     }
 
-    // Lex and parse
     let mut lexer = lumen_compiler::compiler::lexer::Lexer::new(&full_code, 1, 0);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(_) => return code.to_string(), // Parse failed, return original
-    };
-
+    let tokens = lexer.tokenize().ok()?;
     let mut parser = lumen_compiler::compiler::parser::Parser::new(tokens);
-    let program = match parser.parse_program(vec![]) {
-        Ok(p) => p,
-        Err(_) => return code.to_string(), // Parse failed, return original
-    };
-
-    // If the AST is empty (no declarations), return original code
+    let program = parser.parse_program(vec![]).ok()?;
     if program.items.is_empty() {
-        return code.to_string();
+        return None;
     }
 
-    // Pretty-print the AST
     let mut formatter = Formatter::new();
     formatter.fmt_program(&program);
 
@@ -193,8 +212,31 @@ pub fn format_lumen_code(code: &str) -> String {
     if !result.is_empty() && !result.ends_with('\n') {
         result.push('\n');
     }
+    Some((result, program.items.len()))
+}
 
-    result
+/// Format Lumen code using AST-based pretty printing.
+///
+/// The formatter never rewrites code it cannot reproduce faithfully: code that
+/// fails to parse, contains comments, or whose output does not re-parse to the
+/// same number of items and format to itself (a lossy or unstable print) is
+/// returned unchanged.
+pub fn format_lumen_code(code: &str) -> String {
+    if code.trim().is_empty() {
+        return String::new();
+    }
+    if contains_comment(code) {
+        return code.to_string();
+    }
+
+    let Some((result, items)) = pretty_print(code) else {
+        return code.to_string();
+    };
+
+    match pretty_print(&result) {
+        Some((again, items_again)) if again == result && items_again == items => result,
+        _ => code.to_string(),
+    }
 }
 
 /// Pretty-printer for Lumen AST
@@ -792,15 +834,17 @@ impl Formatter {
                     // Check if arm body is a single short statement (return/expr)
                     let is_short_arm = arm.body.len() == 1
                         && match &arm.body[0] {
-                            Stmt::Return(r) => self.fmt_expr(&r.value).len() < 40,
+                            Stmt::Return(r) => self.fmt_expr(&r.value).len() < 34,
                             Stmt::Expr(e) => self.fmt_expr(&e.expr).len() < 40,
                             _ => false,
                         };
 
                     if is_short_arm {
                         // Format short arms on one line: pattern -> value
+                        // A `return` arm must stay a `return`; printing only its value would
+                        // turn it into a plain expression and change what the program does.
                         let value = match &arm.body[0] {
-                            Stmt::Return(r) => self.fmt_expr(&r.value),
+                            Stmt::Return(r) => format!("return {}", self.fmt_expr(&r.value)),
                             Stmt::Expr(e) => self.fmt_expr(&e.expr),
                             _ => unreachable!(),
                         };
@@ -921,7 +965,7 @@ impl Formatter {
         match expr {
             Expr::IntLit(n, _) => n.to_string(),
             Expr::BigIntLit(n, _) => n.to_string(),
-            Expr::FloatLit(f, _) => f.to_string(),
+            Expr::FloatLit(f, _) => fmt_float(*f),
             Expr::StringLit(s, _) => format!("\"{}\"", escape_string(s)),
             Expr::StringInterp(segments, _) => {
                 let mut result = String::from("\"");
@@ -1593,9 +1637,10 @@ end"#;
 end"#;
         let output = format_lumen_code(input);
         assert!(output.contains("match x"));
-        assert!(output.contains("1 -> \"one\""));
-        assert!(output.contains("2 -> \"two\""));
-        assert!(output.contains("_ -> \"other\""));
+        // `return` must survive: dropping it changes what the program does.
+        assert!(output.contains("1 -> return \"one\""), "{output}");
+        assert!(output.contains("2 -> return \"two\""), "{output}");
+        assert!(output.contains("_ -> return \"other\""), "{output}");
     }
 
     #[test]
@@ -2001,5 +2046,34 @@ end
         let output = format_lm_source(input);
         assert!(output.contains("```markdown"), "info string preserved");
         assert!(output.contains("# Title"), "content preserved");
+    }
+
+    #[test]
+    fn float_literals_stay_floats() {
+        let input = "cell main() -> Float\n  let total = 0.0\n  let half = 0.5\n  let big = 2.0\n  return total + half + big\nend";
+        let output = format_lumen_code(input);
+        assert!(output.contains("let total = 0.0"), "{output}");
+        assert!(output.contains("let half = 0.5"), "{output}");
+        assert!(output.contains("let big = 2.0"), "{output}");
+        assert_eq!(fmt_float(1.0), "1.0");
+        assert_eq!(fmt_float(-3.0), "-3.0");
+        assert_eq!(fmt_float(1.5), "1.5");
+    }
+
+    #[test]
+    fn code_with_comments_is_left_untouched() {
+        // The AST has no comments, so formatting would delete them.
+        let input = "cell main() -> Int\n  # keep me\n  let x   =  1 // and me\n  return x\nend";
+        assert_eq!(format_lumen_code(input), input);
+        assert!(!contains_comment("let s = \"# not a comment\" + \"//\""));
+        assert!(contains_comment("let x = 1 # trailing"));
+    }
+
+    #[test]
+    fn formatting_is_idempotent() {
+        let input = "cell fib(n: Int) -> Int\n  if n < 2\n    return n\n  end\n  return fib(n - 1) + fib(n - 2)\nend\n\ncell main() -> Int\n  return fib(10)\nend";
+        let once = format_lumen_code(input);
+        assert_eq!(format_lumen_code(&once), once);
+        assert!(once.contains("cell main()"));
     }
 }

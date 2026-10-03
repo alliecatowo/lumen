@@ -25,6 +25,10 @@ jobs:
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
             binary_name: lumen-lsp.exe
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            binary_name: lumen-lsp
           - target: darwin-x64
             os: macos-latest
             rust_target: x86_64-apple-darwin
@@ -41,9 +45,9 @@ jobs:
         working-directory: ./editors/vscode
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 20
 
@@ -58,8 +62,9 @@ jobs:
           fi
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.rust_target }}
 
       - name: Build Language Server
@@ -77,17 +82,28 @@ jobs:
       - run: npm run compile
 
       - name: Package VSIX
-        run: npx --yes @vscode/vsce package --target ${{ matrix.target }} -o lumen-${{ matrix.target }}.vsix
+        run: npx --yes @vscode/vsce@4.0.0 package --target ${{ matrix.target }} -o lumen-${{ matrix.target }}.vsix
 
-      - uses: actions/upload-artifact@v7
+      # The whole point of the per-platform VSIX is a bundled language server.
+      - name: Check the VSIX bundles the language server
+        shell: bash
+        run: |
+          unzip -l lumen-${{ matrix.target }}.vsix | tee vsix-listing.txt
+          grep -q "extension/server/${{ matrix.binary_name }}" vsix-listing.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: vsix-${{ matrix.target }}
           path: editors/vscode/lumen-${{ matrix.target }}.vsix
           if-no-files-found: error
 
+  # Publishing only ever happens from a vscode-v* tag whose version matches
+  # package.json (checked in the package job); a manual dispatch on a branch
+  # builds the VSIXs but publishes nothing.
   publish-open-vsx:
     name: Publish to Open VSX
     needs: package
+    if: startsWith(github.ref, 'refs/tags/vscode-v')
     runs-on: ubuntu-latest
     # Open VSX trusted publishing is bound to this environment name.
     environment: open-vsx
@@ -95,11 +111,11 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: vsix-*
           merge-multiple: true
@@ -113,15 +129,18 @@ jobs:
   publish-marketplace:
     name: Publish to VS Code Marketplace
     needs: package
+    if: startsWith(github.ref, 'refs/tags/vscode-v')
     runs-on: ubuntu-latest
+    # Keep VSCE_PAT as a secret of this environment; add required reviewers there.
+    environment: vscode-marketplace
     env:
       VSCE_PAT: ${{ secrets.VSCE_PAT }}
     steps:
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: vsix-*
           merge-multiple: true
@@ -129,4 +148,4 @@ jobs:
 
       - name: Publish (skipped when VSCE_PAT is not set)
         if: ${{ env.VSCE_PAT != '' }}
-        run: npx --yes @vscode/vsce publish --skip-duplicate --packagePath vsix/*.vsix
+        run: npx --yes @vscode/vsce@4.0.0 publish --skip-duplicate --packagePath vsix/*.vsix

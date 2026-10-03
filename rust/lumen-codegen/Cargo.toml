@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-cranelift-codegen = "0.116"
+cranelift-codegen = "0.129"
 cranelift-frontend = "0.116"
 cranelift-module = "0.116"
 cranelift-native = "0.116"

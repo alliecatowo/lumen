@@ -38,12 +38,12 @@ cell validate_invoice(invoice: Invoice) -> AuditResult
   # Constraints on Record will auto-validate subtotal/tax/total logic upon construction.
   # If we get here, the invoice is valid structurally and mathematically.
   
-  let issues = []
+  let mut issues = []
   if invoice.currency != "USD"
     issues = append(issues, "Non-USD currency: " + invoice.currency)
   end
   
-  let status = "APPROVED"
+  let mut status = "APPROVED"
   if length(issues) > 0
     status = "FLAGGED"
   end

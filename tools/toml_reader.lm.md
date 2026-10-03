@@ -8,7 +8,7 @@ cell print_value(prefix: String, val: Any) -> Null
   let t = type_of(val)
   if t == "map"
     let ks = keys(val)
-    let i = 0
+    let mut i = 0
     while i < len(ks)
       let k = ks[i]
       let child = val[k]
@@ -28,7 +28,7 @@ cell print_value(prefix: String, val: Any) -> Null
 end
 
 cell main() -> Null
-  let path = "lumen.toml"
+  let mut path = "lumen.toml"
   if not exists(path)
     print("No lumen.toml found in current directory.")
     print("Trying Cargo.toml as fallback...")
@@ -46,7 +46,7 @@ cell main() -> Null
   let parsed = toml_parse(content)
 
   let top_keys = keys(parsed)
-  let i = 0
+  let mut i = 0
   while i < len(top_keys)
     let k = top_keys[i]
     let val = parsed[k]

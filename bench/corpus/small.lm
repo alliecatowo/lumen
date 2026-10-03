@@ -20,8 +20,8 @@ cell fib_iterative(n: Int) -> Int
   if n < 2
     return n
   end
-  let prev = 0
-  let curr = 1
+  let mut prev = 0
+  let mut curr = 1
   for _ in range(2, n + 1)
     let next = prev + curr
     prev = curr

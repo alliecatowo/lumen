@@ -10,10 +10,10 @@ cell build_recovery_snapshot(
   fallback_note: String,
   notify_tool: String
 ) -> RecoverySnapshot
-  let status: String = "stable"
-  let recommended_tool: String = execution.target_tool
-  let action_note: String = "no recovery action required"
-  let escalation_level: Int = 0
+  let mut status: String = "stable"
+  let mut recommended_tool: String = execution.target_tool
+  let mut action_note: String = "no recovery action required"
+  let mut escalation_level: Int = 0
 
   if execution.fallback_used
     status = "degraded"

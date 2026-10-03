@@ -13,7 +13,7 @@ cell max_int(a: Int, b: Int) -> Int
 end
 
 cell pad_right(s: String, width: Int) -> String
-  let result = s
+  let mut result = s
   while len(result) < width
     result = result + " "
   end
@@ -24,19 +24,19 @@ cell compute_widths(headers: list[String], rows: list[list[String]]) -> list[Int
   let num_cols = len(headers)
 
   # Start with header widths
-  let widths = []
-  let i = 0
+  let mut widths = []
+  let mut i = 0
   while i < num_cols
     widths = append(widths, len(headers[i]))
     i = i + 1
   end
 
   # Update widths from each row
-  let r = 0
+  let mut r = 0
   while r < len(rows)
     let row = rows[r]
-    let new_widths = []
-    let c = 0
+    let mut new_widths = []
+    let mut c = 0
     while c < num_cols
       let cur = widths[c]
       if c < len(row)
@@ -58,8 +58,8 @@ cell generate_table(headers: list[String], rows: list[list[String]]) -> String
   let widths = compute_widths(headers, rows)
 
   # Build header row
-  let header_cells = []
-  let i = 0
+  let mut header_cells = []
+  let mut i = 0
   while i < num_cols
     header_cells = append(header_cells, pad_right(headers[i], widths[i]))
     i = i + 1
@@ -67,11 +67,11 @@ cell generate_table(headers: list[String], rows: list[list[String]]) -> String
   let header_line = "| " + join(header_cells, " | ") + " |"
 
   # Build separator row
-  let sep_cells = []
+  let mut sep_cells = []
   i = 0
   while i < num_cols
-    let dashes = ""
-    let d = 0
+    let mut dashes = ""
+    let mut d = 0
     while d < widths[i]
       dashes = dashes + "-"
       d = d + 1
@@ -82,14 +82,14 @@ cell generate_table(headers: list[String], rows: list[list[String]]) -> String
   let sep_line = "| " + join(sep_cells, " | ") + " |"
 
   # Build data rows
-  let lines = [header_line, sep_line]
-  let r = 0
+  let mut lines = [header_line, sep_line]
+  let mut r = 0
   while r < len(rows)
     let row = rows[r]
-    let cells = []
-    let c = 0
+    let mut cells = []
+    let mut c = 0
     while c < num_cols
-      let val = ""
+      let mut val = ""
       if c < len(row)
         val = row[c]
       end

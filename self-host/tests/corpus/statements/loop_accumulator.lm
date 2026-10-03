@@ -1,5 +1,5 @@
 cell main() -> Int
-  let acc = 0
+  let mut acc = 0
   for i in 1..=100
     acc = acc + i
   end

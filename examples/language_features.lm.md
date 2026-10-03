@@ -5,8 +5,8 @@
 
 ```lumen
 cell test_while() -> Int
-  let sum = 0
-  let i = 0
+  let mut sum = 0
+  let mut i = 0
   while i < 10
     sum = sum + i
     i = i + 1
@@ -15,7 +15,7 @@ cell test_while() -> Int
 end
 
 cell test_loop_break() -> Int
-  let count = 0
+  let mut count = 0
   loop
     count = count + 1
     if count >= 5
@@ -26,7 +26,7 @@ cell test_loop_break() -> Int
 end
 
 cell test_compound_assign() -> Int
-  let x = 10
+  let mut x = 10
   x += 5
   x -= 3
   x *= 2
@@ -34,9 +34,9 @@ cell test_compound_assign() -> Int
 end
 
 cell test_match_patterns() -> String
-  let out = ""
+  let mut out = ""
   for i in range(0, 5)
-    let label = "other"
+    let mut label = "other"
     match i
       0 -> label = "zero"
       1 -> label = "one"
@@ -49,7 +49,7 @@ cell test_match_patterns() -> String
 end
 
 cell test_list_ops() -> String
-  let items = []
+  let mut items = []
   items = append(items, "a")
   items = append(items, "b")
   items = append(items, "c")

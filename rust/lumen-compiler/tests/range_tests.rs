@@ -40,7 +40,7 @@ fn range_exclusive_basic() {
         "range_exclusive_basic",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for i in 0..5
     sum = sum + i
   end
@@ -87,7 +87,7 @@ fn range_inclusive_basic() {
         "range_inclusive_basic",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for i in 0..=5
     sum = sum + i
   end
@@ -133,7 +133,7 @@ fn range_for_loop_exclusive() {
         "range_for_exclusive",
         r#"
 cell main() -> Int
-  let total = 0
+  let mut total = 0
   for x in 1..10
     total = total + x
   end
@@ -149,7 +149,7 @@ fn range_for_loop_inclusive() {
         "range_for_inclusive",
         r#"
 cell main() -> Int
-  let total = 0
+  let mut total = 0
   for x in 1..=10
     total = total + x
   end
@@ -165,7 +165,7 @@ fn range_for_loop_nested() {
         "range_for_nested",
         r#"
 cell main() -> Int
-  let count = 0
+  let mut count = 0
   for i in 0..3
     for j in 0..3
       count = count + 1
@@ -188,7 +188,7 @@ fn range_with_variable_start() {
         r#"
 cell main() -> Int
   let start = 3
-  let sum = 0
+  let mut sum = 0
   for i in start..10
     sum = sum + i
   end
@@ -205,7 +205,7 @@ fn range_with_variable_end() {
         r#"
 cell main() -> Int
   let limit = 10
-  let sum = 0
+  let mut sum = 0
   for i in 0..limit
     sum = sum + i
   end
@@ -223,7 +223,7 @@ fn range_with_variable_both() {
 cell main() -> Int
   let lo = 2
   let hi = 8
-  let sum = 0
+  let mut sum = 0
   for i in lo..hi
     sum = sum + i
   end
@@ -241,7 +241,7 @@ fn range_inclusive_with_variables() {
 cell main() -> Int
   let lo = 1
   let hi = 5
-  let sum = 0
+  let mut sum = 0
   for i in lo..=hi
     sum = sum + i
   end
@@ -261,7 +261,7 @@ fn range_expression_bounds() {
         "range_expr_bounds",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for i in (1 + 1)..(3 + 2)
     sum = sum + i
   end
@@ -282,7 +282,7 @@ fn range_type_is_list_int() {
         "range_type_inference",
         r#"
 cell sum_list(items: list[Int]) -> Int
-  let total = 0
+  let mut total = 0
   for x in items
     total = total + x
   end
@@ -409,7 +409,7 @@ fn range_zero_length() {
         "range_zero_len",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for i in 5..5
     sum = sum + i
   end
@@ -442,7 +442,7 @@ fn range_as_function_argument() {
         "range_func_arg",
         r#"
 cell sum_all(items: list[Int]) -> Int
-  let total = 0
+  let mut total = 0
   for x in items
     total = total + x
   end
@@ -466,7 +466,7 @@ fn range_negative_start() {
         "range_neg_start",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for i in 0..5
     sum = sum + i
   end
@@ -482,7 +482,7 @@ fn range_with_negative_numbers() {
         "range_neg_nums",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   let start = 0 - 3
   for i in start..3
     sum = sum + i
@@ -500,7 +500,7 @@ fn range_inverted() {
         "range_inverted",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for i in 10..5
     sum = sum + i
   end

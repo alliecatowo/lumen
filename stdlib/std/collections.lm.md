@@ -14,9 +14,9 @@ cell chunk(lst, size: int)
     return []
   end
 
-  let result = []
-  let current_chunk = []
-  let count = 0
+  let mut result = []
+  let mut current_chunk = []
+  let mut count = 0
 
   for item in lst
     current_chunk = append(current_chunk, item)
@@ -41,8 +41,8 @@ cell zip(list1, list2)
   let len2 = len(list2)
   let min_len = min(len1, len2)
 
-  let result = []
-  let i = 0
+  let mut result = []
+  let mut i = 0
   while i < min_len
     let pair = [list1[i], list2[i]]
     result = append(result, pair)
@@ -54,7 +54,7 @@ end
 
 # Flatten a list of lists
 cell flatten(nested)
-  let result = []
+  let mut result = []
   for sublist in nested
     for item in sublist
       result = append(result, item)
@@ -65,8 +65,8 @@ end
 
 # Get unique elements from a list
 cell unique(lst)
-  let result = []
-  let seen = {}
+  let mut result = []
+  let mut seen = {}
 
   for item in lst
     let key = hash(item)
@@ -81,12 +81,12 @@ end
 
 # Partition a list based on a predicate (returns [matching, not_matching])
 cell partition_by_bool(lst, pred_results: list[bool])
-  let matching = []
-  let not_matching = []
+  let mut matching = []
+  let mut not_matching = []
   let len_lst = len(lst)
   let len_pred = len(pred_results)
 
-  let i = 0
+  let mut i = 0
   while i < len_lst and i < len_pred
     if pred_results[i]
       matching = append(matching, lst[i])
@@ -107,8 +107,8 @@ cell take(lst, n: int)
   let len_lst = len(lst)
   let count = min(n, len_lst)
 
-  let result = []
-  let i = 0
+  let mut result = []
+  let mut i = 0
   while i < count
     result = append(result, lst[i])
     i = i + 1
@@ -126,8 +126,8 @@ cell drop(lst, n: int)
     return []
   end
 
-  let result = []
-  let i = n
+  let mut result = []
+  let mut i = n
   while i < len_lst
     result = append(result, lst[i])
     i = i + 1
@@ -138,7 +138,7 @@ end
 # Find index of first occurrence
 cell index_of(lst, item) -> int
   let len_lst = len(lst)
-  let i = 0
+  let mut i = 0
   while i < len_lst
     if lst[i] == item
       return i
@@ -170,7 +170,7 @@ end
 
 # Sum of integers
 cell sum_ints(lst: list[int]) -> int
-  let total = 0
+  let mut total = 0
   for item in lst
     total = total + item
   end
@@ -182,7 +182,7 @@ cell product_ints(lst: list[int]) -> int
   if len(lst) == 0
     return 0
   end
-  let total = 1
+  let mut total = 1
   for item in lst
     total = total * item
   end
@@ -196,8 +196,8 @@ cell intersperse(lst, separator)
     return lst
   end
 
-  let result = []
-  let i = 0
+  let mut result = []
+  let mut i = 0
   while i < len_lst
     result = append(result, lst[i])
     if i < len_lst - 1
@@ -214,9 +214,9 @@ cell group(lst)
     return []
   end
 
-  let result = []
-  let current_group = [lst[0]]
-  let i = 1
+  let mut result = []
+  let mut current_group = [lst[0]]
+  let mut i = 1
   while i < len(lst)
     if lst[i] == lst[i - 1]
       current_group = append(current_group, lst[i])

@@ -73,7 +73,7 @@ cell main() -> Null
   print("")
 
   print("Building list: 1 -> 2 -> 3 -> Nil")
-  let list1 = Nil
+  let mut list1 = Nil
   list1 = prepend(3, list1)
   list1 = prepend(2, list1)
   list1 = prepend(1, list1)

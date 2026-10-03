@@ -70,7 +70,7 @@ fn for_filter_parsed_into_ast() {
 
 #[test]
 fn for_filter_compiles_to_lir() {
-    let src = "cell main() -> Int\n  let total = 0\n  for x in [1, 2, 3, 4, 5] if x > 2\n    total += x\n  end\n  return total\nend";
+    let src = "cell main() -> Int\n  let mut total = 0\n  for x in [1, 2, 3, 4, 5] if x > 2\n    total += x\n  end\n  return total\nend";
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
 

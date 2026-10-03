@@ -23,7 +23,7 @@ cell test_list_literal() -> Bool
 end
 
 cell test_list_indexing() -> Bool
-  let items = [10, 20, 30, 40, 50]
+  let mut items = [10, 20, 30, 40, 50]
   
   assert items[0] == 10
   assert items[4] == 50
@@ -33,7 +33,7 @@ cell test_list_indexing() -> Bool
 end
 
 cell test_list_append() -> Bool
-  let items: list[Int] = []
+  let mut items: list[Int] = []
   items = append(items, 1)
   items = append(items, 2)
   items = append(items, 3)
@@ -43,13 +43,13 @@ end
 
 # TODO(T202): Lumen uses append, not push.
 cell test_list_push() -> Bool
-  let items = [1, 2]
+  let mut items = [1, 2]
   items = append(items, 3)
   return len(items) == 3 and items[2] == 3
 end
 
 cell test_list_prepend() -> Bool
-  let items = [2, 3, 4]
+  let mut items = [2, 3, 4]
   items = [1, ...items]
   
   return items[0] == 1 and len(items) == 4
@@ -312,7 +312,7 @@ cell test_set_literal() -> Bool
 end
 
 cell test_set_add() -> Bool
-  let s: set[Int] = {}
+  let mut s: set[Int] = {}
   s = add(s, 1)
   s = add(s, 2)
   s = add(s, 1)  # duplicate should be ignored
@@ -321,7 +321,7 @@ cell test_set_add() -> Bool
 end
 
 cell test_set_remove() -> Bool
-  let s = {1, 2, 3, 4}
+  let mut s = {1, 2, 3, 4}
   s = remove(s, 2)
   
   return len(s) == 3 and not contains(s, 2)

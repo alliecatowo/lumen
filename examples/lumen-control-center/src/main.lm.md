@@ -136,13 +136,13 @@ cell build_planner_snapshot(
   research_tool: String,
   notify_tool: String
 ) -> PlannerSnapshot
-  let steps: list[PlannedStep] = []
+  let mut steps: list[PlannedStep] = []
   steps = append(steps, make_step(1, "planning", planning_tool, "draft rollout plan and risk priorities"))
   steps = append(steps, make_step(2, "research", research_tool, "collect active incident context from issue tracker"))
   steps = append(steps, make_step(3, "notify", notify_tool, "publish dry-run summary to release channel"))
 
   let preview: String = "model " + target_model + " prepared " + string(len(steps)) + " staged actions for " + string(item_count) + " tasks"
-  let requires_manual_review: Bool = false
+  let mut requires_manual_review: Bool = false
   if mode != "dry-run"
     requires_manual_review = true
   end
@@ -163,12 +163,12 @@ cell build_execution_command(
   requested_tool: String,
   payload_json: String
 ) -> ExecutionCommand
-  let tool_alias: String = requested_tool
+  let mut tool_alias: String = requested_tool
   if requested_tool == ""
     tool_alias = selected_tool
   end
 
-  let expected: String = "remote-dispatch"
+  let mut expected: String = "remote-dispatch"
   if manual_review
     expected = "dispatch-denied"
   end
@@ -182,10 +182,10 @@ cell build_execution_command(
 end
 
 cell build_execution_snapshot(mode: String, command: ExecutionCommand) -> ExecutionSnapshot
-  let outcome: String = command.expected_outcome
-  let retries: Int = 0
-  let fallback_used: Bool = false
-  let error_reason: String = "none"
+  let mut outcome: String = command.expected_outcome
+  let mut retries: Int = 0
+  let mut fallback_used: Bool = false
+  let mut error_reason: String = "none"
 
   if mode == "dry-run"
     if command.tool_alias == "GitHubIssues"
@@ -215,10 +215,10 @@ cell build_recovery_snapshot(
   fallback_note: String,
   notify_tool: String
 ) -> RecoverySnapshot
-  let status: String = "stable"
-  let recommended_tool: String = target_tool
-  let action_note: String = "no recovery action required"
-  let escalation_level: Int = 0
+  let mut status: String = "stable"
+  let mut recommended_tool: String = target_tool
+  let mut action_note: String = "no recovery action required"
+  let mut escalation_level: Int = 0
 
   if fallback_used
     status = "degraded"
@@ -284,7 +284,7 @@ cell stage_event(stage: String, alias: String, outcome: String) -> StageEvent
 end
 
 cell render(summary: RunSummary, routes: list[ToolRoute], bindings: list[ProviderBinding]) -> String
-  let out: String = "Lumen Control Center Demo\n"
+  let mut out: String = "Lumen Control Center Demo\n"
   out = out + "workspace: " + summary.workspace + " (" + summary.mode + ")\n"
   out = out + "tasks: " + string(summary.tasks_total) + ", routes: " + string(summary.routes_total) + "\n"
   out = out + "notes: " + summary.notes + "\n\n"
@@ -362,7 +362,7 @@ cell main() -> String
     stage_event("recovery", recovery.recommended_tool, recovery.status + ": " + recovery.action_note)
   ]
 
-  let notes: String = "plan=" + planner_binding
+  let mut notes: String = "plan=" + planner_binding
   notes = notes + ", exec=" + research_binding
   notes = notes + ", notify=" + notify_binding
   notes = notes + ", fallback=" + invocation.fallback

@@ -762,7 +762,7 @@ fn t392_closure_loop_variable_compile() {
         source: r#"
 cell main() -> Int
   let adder = fn(x: Int) => x + 10
-  let sum = 0
+  let mut sum = 0
   for i in [1, 2, 3]
     sum = sum + adder(i)
   end
@@ -855,7 +855,7 @@ fn t393_large_function_50_locals_compile() {
 
 #[test]
 fn t393_deep_nesting_compile() {
-    let mut source = String::from("cell main() -> Int\n  let x = 0\n");
+    let mut source = String::from("cell main() -> Int\n  let mut x = 0\n");
     for _ in 0..12 {
         source.push_str("  if true\n");
     }

@@ -639,8 +639,8 @@ fn rand_bytes<const N: usize>() -> [u8; N] {
     #[cfg(feature = "ed25519")]
     {
         let mut bytes = [0u8; N];
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut bytes);
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut bytes);
         bytes
     }
 

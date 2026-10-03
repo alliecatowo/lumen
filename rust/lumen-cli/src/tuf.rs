@@ -525,9 +525,10 @@ mod tests {
         {
             use base64::Engine;
             use ed25519_dalek::SigningKey;
-            use rand::rngs::OsRng;
+            use rand::rand_core::UnwrapErr;
+            use rand::rngs::SysRng;
 
-            let signing_key = SigningKey::generate(&mut OsRng);
+            let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let verifying_key = signing_key.verifying_key();
             let public_b64 =
                 base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());

@@ -298,7 +298,7 @@ impl GitResolver {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(url.as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
+        let hash = hex::encode(hasher.finalize());
         self.cache_dir.join(&hash[..16])
     }
 
@@ -680,7 +680,7 @@ pub fn update_git_repo(url: &str, cache_dir: &Path) -> Result<(), GitError> {
 
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
-    let hash = format!("{:x}", hasher.finalize());
+    let hash = hex::encode(hasher.finalize());
     let repo_dir = cache_dir.join(&hash[..16]);
 
     if !repo_dir.exists() {

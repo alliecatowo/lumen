@@ -7,7 +7,8 @@
 
 use crate::tools::{ToolError, ToolProvider, ToolSchema};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -147,7 +148,7 @@ impl Ed25519Provider {
     fn execute(&self, input: Value) -> Result<Value, ToolError> {
         match self.tool {
             Ed25519Tool::Keygen => {
-                let signing_key = SigningKey::generate(&mut OsRng);
+                let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
                 let verifying_key = signing_key.verifying_key();
 
                 let secret_b64 = b64_encode(&signing_key.to_bytes());

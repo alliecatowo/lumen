@@ -39,6 +39,12 @@ impl CompilationCache {
         diagnostics: Vec<Diagnostic>,
         diagnostic_context: DiagnosticContext,
     ) {
+        // While the user is mid-edit the text often fails to parse. Keep the last
+        // good AST/symbols so hover, completion and go-to-definition keep working.
+        let (program, symbols) = match self.entries.remove(&uri) {
+            Some(prev) => (program.or(prev.program), symbols.or(prev.symbols)),
+            None => (program, symbols),
+        };
         self.entries.insert(
             uri,
             CacheEntry {
@@ -92,5 +98,63 @@ impl CompilationCache {
 
     pub fn get_diagnostic_context(&self, uri: &Uri) -> Option<DiagnosticContext> {
         self.entries.get(uri).map(|e| e.diagnostic_context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program(src: &str) -> Option<Program> {
+        let mut lexer = lumen_compiler::compiler::lexer::Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().ok()?;
+        let mut parser = lumen_compiler::compiler::parser::Parser::new(tokens);
+        parser.parse_program(vec![]).ok()
+    }
+
+    #[test]
+    fn a_failed_parse_keeps_the_last_good_program() {
+        let uri: Uri = "file:///t.lm".parse().unwrap();
+        let mut cache = CompilationCache::new();
+        let good = program("cell main() -> Int\n  return 1\nend");
+        assert!(good.is_some());
+        cache.update(
+            uri.clone(),
+            "good".into(),
+            good,
+            None,
+            vec![],
+            DiagnosticContext::default(),
+        );
+        cache.update(
+            uri.clone(),
+            "cell main(".into(),
+            None,
+            None,
+            vec![],
+            DiagnosticContext::default(),
+        );
+
+        assert_eq!(cache.get_text(&uri).map(String::as_str), Some("cell main("));
+        assert!(
+            cache.get_program(&uri).is_some(),
+            "last good AST was dropped"
+        );
+    }
+
+    #[test]
+    fn remove_forgets_the_document() {
+        let uri: Uri = "file:///t.lm".parse().unwrap();
+        let mut cache = CompilationCache::new();
+        cache.update(
+            uri.clone(),
+            "x".into(),
+            None,
+            None,
+            vec![],
+            DiagnosticContext::default(),
+        );
+        cache.remove(&uri);
+        assert!(cache.get_text(&uri).is_none());
     }
 }

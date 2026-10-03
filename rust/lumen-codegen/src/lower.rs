@@ -194,9 +194,8 @@ fn lower_cell(
         .max(cell.params.len())
         .clamp(1, MAX_REGS);
     let mut vars: Vec<Variable> = Vec::with_capacity(num_regs);
-    for i in 0..num_regs {
-        let var = Variable::from_u32(i as u32);
-        builder.declare_var(var, types::I64);
+    for _ in 0..num_regs {
+        let var = builder.declare_var(types::I64);
         vars.push(var);
     }
 

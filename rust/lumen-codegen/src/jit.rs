@@ -1093,7 +1093,6 @@ fn lower_cell_jit(
     // All Cranelift variables are declared as I64 (both ints and string pointers
     // are I64; only floats are F64). The semantic distinction is in var_types.
     for i in 0..num_regs {
-        let var = Variable::from_u32(i as u32);
         let (var_ty, clif_ty) = if i < cell.params.len() {
             let param_ty_str = &cell.params[i].ty;
             if param_ty_str == "Float" {
@@ -1110,7 +1109,7 @@ fn lower_cell_jit(
             // The semantic type for string regs is set later when LoadK executes.
             (JitVarType::Int, types::I64)
         };
-        builder.declare_var(var, clif_ty);
+        let var = builder.declare_var(clif_ty);
         var_types.insert(i as u32, var_ty);
         vars.push(var);
     }

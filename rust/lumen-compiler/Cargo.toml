@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 strum = { version = "0.26", features = ["derive"] }
-strum_macros = "0.26"
+strum_macros = "0.28"
 num-bigint = { workspace = true, features = ["serde"] }
 num-traits = { workspace = true }
 

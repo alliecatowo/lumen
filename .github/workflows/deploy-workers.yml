@@ -1,5 +1,8 @@
 name: Deploy Workers
 
+# Deploys only run when a Cloudflare token is configured, after the worker unit
+# tests pass. Keep CLOUDFLARE_API_TOKEN as a secret of the `workers-deploy`
+# environment (add required reviewers there to gate production deploys).
 on:
   push:
     branches: [main]
@@ -7,53 +10,64 @@ on:
       - 'workers/**'
   workflow_dispatch:
 
-jobs:
-  deploy-registry:
-    name: Deploy Registry Worker
-    runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    steps:
-      - name: Skip when the Cloudflare token is not configured
-        if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
-        run: echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping deploy"
-      - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        uses: actions/checkout@v7
-      - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        uses: actions/setup-node@v7
-        with:
-          node-version: 20
-      - name: Install wrangler
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        run: npm install -g wrangler
-      - name: Deploy registry
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        working-directory: workers/registry
-        run: wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+permissions:
+  contents: read
 
-  deploy-transparency:
-    name: Deploy Transparency Log Worker
+concurrency:
+  group: deploy-workers
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test ${{ matrix.worker }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        worker: [registry, transparency-log]
+    defaults:
+      run:
+        working-directory: workers/${{ matrix.worker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workers/${{ matrix.worker }}/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  deploy:
+    name: Deploy ${{ matrix.worker }}
+    needs: test
+    runs-on: ubuntu-latest
+    environment: workers-deploy
+    strategy:
+      # Deploy the log first: the registry binds to it as a service.
+      max-parallel: 1
+      matrix:
+        worker: [transparency-log, registry]
+    defaults:
+      run:
+        working-directory: workers/${{ matrix.worker }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - name: Skip when the Cloudflare token is not configured
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
-        run: echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping deploy"
+        run: echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping deploy of ${{ matrix.worker }}"
       - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 20
-      - name: Install wrangler
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workers/${{ matrix.worker }}/package-lock.json
+      # wrangler comes from the worker's own lockfile instead of an unpinned global install.
+      - name: Install dependencies
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        run: npm install -g wrangler
-      - name: Deploy transparency log
+        run: npm ci
+      - name: Deploy ${{ matrix.worker }}
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        working-directory: workers/transparency-log
-        run: wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy

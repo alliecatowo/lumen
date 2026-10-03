@@ -502,6 +502,30 @@ struct SolveCtx {
     sources: HashMap<String, Candidate>,
 }
 
+/// Dependency names become directory names under the install and cache dirs, so
+/// they must not be able to climb out of them. Scoped names must be valid
+/// package names; unscoped (path/legacy) names are limited to `[A-Za-z0-9_-]`.
+fn is_safe_dep_name(name: &str) -> bool {
+    if name.starts_with('@') {
+        return crate::config::is_valid_package_name(name);
+    }
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn check_dep_name(name: &str, from: &str) -> Result<(), ResolutionError> {
+    if is_safe_dep_name(name) {
+        Ok(())
+    } else {
+        Err(ResolutionError::RegistryError {
+            message: format!("invalid dependency name '{}' (required by {})", name, from),
+        })
+    }
+}
+
 /// Placeholder requester name for the root manifest's own dependencies.
 const ROOT: &str = "(root)";
 /// Upper bound on candidate evaluations; guards against pathological graphs.
@@ -861,6 +885,15 @@ impl Resolver {
     ) -> Result<ResolutionResult, ResolutionError> {
         let mut state = SolveState::default();
         let mut pending: VecDeque<PackageId> = VecDeque::new();
+
+        for name in request
+            .root_deps
+            .keys()
+            .chain(request.dev_deps.keys())
+            .chain(request.build_deps.keys())
+        {
+            check_dep_name(name, ROOT)?;
+        }
 
         let add_root = |deps: &HashMap<PackageId, DependencySpec>,
                         state: &mut SolveState,
@@ -1416,6 +1449,11 @@ impl Resolver {
                 },
             };
 
+            // Names from manifests and registry metadata are untrusted: they end up in paths.
+            for (dep_name, _) in &candidate.deps {
+                check_dep_name(dep_name, &pkg).map_err(SearchError::Fatal)?;
+            }
+
             let mut next = state.clone();
             let mut next_pending = pending.clone();
             let mut ok = true;
@@ -1892,7 +1930,7 @@ pub fn format_resolution_error(error: &ResolutionError) -> String {
             }
 
             output.push_str("\n━━━ General Suggestions ━━━\n");
-            output.push_str("1. Try running `lumen pkg update` to get latest versions\n");
+            output.push_str("1. Try running `wares update` to get latest versions\n");
             output.push_str("2. Check if any dependencies have been yanked from the registry\n");
             output.push_str("3. Review your lumen.toml for conflicting version constraints\n");
             output.push_str("4. Consider using a lockfile to pin specific versions\n");
@@ -1934,7 +1972,7 @@ pub fn format_resolution_error(error: &ResolutionError) -> String {
             output.push_str("  • The registry is unreachable\n\n");
 
             output.push_str("Try:\n");
-            output.push_str(&format!("  lumen pkg search {package}\n"));
+            output.push_str(&format!("  wares search {package}\n"));
             output.push_str("  (to see available versions)\n");
         }
         ResolutionError::RegistryError { message } => {

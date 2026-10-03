@@ -98,8 +98,12 @@ enum Commands {
     Login {
         #[arg(long)]
         registry: Option<String>,
+        /// API token. Visible in the process list; prefer --token-stdin or WARES_TOKEN.
         #[arg(long)]
         token: Option<String>,
+        /// Read the API token from standard input
+        #[arg(long)]
+        token_stdin: bool,
         #[arg(long)]
         name: Option<String>,
         /// Provider (github, etc)
@@ -159,7 +163,8 @@ enum TokenCommands {
     List,
     Add {
         registry: String,
-        token: String,
+        /// API token, or `-` to read it from standard input (WARES_TOKEN is also used)
+        token: Option<String>,
         name: Option<String>,
     },
     Remove {
@@ -228,9 +233,11 @@ fn main() {
         Commands::Login {
             registry,
             token,
+            token_stdin,
             name,
             provider: _,
         } => {
+            let token = resolve_token(token, token_stdin);
             // For now mapping to registry_cmd logic
             registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Login {
                 registry,
@@ -272,13 +279,21 @@ fn main() {
                 registry,
                 token,
                 name,
-            } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
-                sub: registry_cmd::TokenCommands::Add {
-                    registry,
-                    token,
-                    name,
-                },
-            }),
+            } => {
+                let from_stdin = token.as_deref() == Some("-");
+                let token = resolve_token(if from_stdin { None } else { token }, from_stdin);
+                let Some(token) = token else {
+                    eprintln!("error: no token given; pass it as `-` (stdin) or set WARES_TOKEN");
+                    std::process::exit(2);
+                };
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
+                    sub: registry_cmd::TokenCommands::Add {
+                        registry,
+                        token,
+                        name,
+                    },
+                })
+            }
             TokenCommands::Remove { registry } => {
                 registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
                     sub: registry_cmd::TokenCommands::Remove { registry },
@@ -309,4 +324,27 @@ fn main() {
             }
         },
     }
+}
+
+/// Resolve an API token without requiring it on the command line (where other
+/// users can read it from the process list): stdin, then `--token`, then `WARES_TOKEN`.
+fn resolve_token(cli_token: Option<String>, from_stdin: bool) -> Option<String> {
+    if from_stdin {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() {
+            let token = line.trim().to_string();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+        eprintln!("error: expected a token on standard input");
+        std::process::exit(2);
+    }
+    if let Some(token) = cli_token {
+        eprintln!("warning: a token on the command line is visible to other users; prefer --token-stdin or WARES_TOKEN");
+        return Some(token);
+    }
+    std::env::var("WARES_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
 }

@@ -309,3 +309,26 @@ fn a_path_dependency_must_satisfy_version_requirements_on_it() {
         .unwrap_err();
     assert!(matches!(err, ResolutionError::NoSolution { .. }), "{err:?}");
 }
+
+#[test]
+fn dependency_names_that_climb_out_of_the_install_dir_are_rejected() {
+    let reg = FileRegistry::new();
+    reg.publish("@t/evil", "1.0.0", &[("../../outside", "^1.0.0")]);
+    let resolver = Resolver::new(reg.url(), None);
+    let err = resolver
+        .resolve(&request(&reg, &[("@t/evil", ver("^1.0.0"))]))
+        .unwrap_err();
+    assert!(
+        format!("{err}").contains("invalid dependency name"),
+        "{err}"
+    );
+
+    // The same check applies to the root manifest.
+    let err = resolver
+        .resolve(&request(&reg, &[("@t/../x", ver("^1.0.0"))]))
+        .unwrap_err();
+    assert!(
+        format!("{err}").contains("invalid dependency name"),
+        "{err}"
+    );
+}

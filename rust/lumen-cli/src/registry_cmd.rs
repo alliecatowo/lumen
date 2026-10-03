@@ -1,7 +1,7 @@
 //! Registry command handlers for authentication and package management.
 //!
 //! Commands:
-//! - `lumen registry login` - Interactive login, saves token
+//! - `wares login` - Interactive login, saves token
 //! - `lumen registry logout` - Removes stored token
 //! - `lumen registry token` - List/manage tokens
 //! - `lumen registry owner add <package> <email>` - Add owner
@@ -323,7 +323,7 @@ fn cmd_registry_whoami(registry: Option<String>) {
             red("error:"),
             cyan(&registry_url)
         );
-        eprintln!("  Run {} to login", cyan("lumen registry login"));
+        eprintln!("  Run {} to login", cyan("wares login"));
         std::process::exit(1);
     }
 
@@ -415,7 +415,7 @@ fn cmd_token_list() {
     if credentials.is_empty() {
         println!("{} no stored tokens", gray("info:"));
         println!();
-        println!("Run {} to authenticate", cyan("lumen registry login"));
+        println!("Run {} to authenticate", cyan("wares login"));
         return;
     }
 
@@ -514,10 +514,7 @@ fn cmd_owner_add(package: String, email: String, role: Option<String>) {
     };
 
     if !client.is_authenticated() {
-        eprintln!(
-            "{} Not authenticated. Run: lumen registry login",
-            red("error:")
-        );
+        eprintln!("{} Not authenticated. Run: wares login", red("error:"));
         std::process::exit(1);
     }
 
@@ -594,10 +591,7 @@ fn cmd_owner_remove(package: String, email: String) {
     };
 
     if !client.is_authenticated() {
-        eprintln!(
-            "{} Not authenticated. Run: lumen registry login",
-            red("error:")
-        );
+        eprintln!("{} Not authenticated. Run: wares login", red("error:"));
         std::process::exit(1);
     }
 
@@ -778,7 +772,7 @@ pub fn publish_with_auth(
         .map_err(|e| format!("Failed to create authenticated client: {}", e))?;
 
     if !client.is_authenticated() {
-        return Err("Not authenticated. Run 'lumen registry login' first.".to_string());
+        return Err("Not authenticated. Run 'wares login' first.".to_string());
     }
 
     println!(
@@ -819,7 +813,7 @@ pub fn get_auth_headers(registry_url: &str) -> Result<HashMap<String, String>, S
     let token = cred_manager
         .get_token(registry_url)
         .map_err(|e| format!("Failed to retrieve token: {}", e))?
-        .ok_or_else(|| "No token found. Run 'lumen registry login' first.".to_string())?;
+        .ok_or_else(|| "No token found. Run 'wares login' first.".to_string())?;
 
     let mut headers = HashMap::new();
     headers.insert("Authorization".to_string(), format!("Bearer {}", token));

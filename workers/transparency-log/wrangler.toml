@@ -21,6 +21,9 @@ database_id = "222b303b-3e32-43a0-be42-24b480d78201"
 #   CA_PUBLIC_KEY      SPKI public key (PEM or base64) of the registry CA; entries are
 #                      rejected (503) until it is set. Derive it with
 #                      `openssl pkey -in ca-key.pem -pubout`.
+#   LOG_PRIVATE_KEY    PKCS#8 PEM ECDSA P-256 key that signs checkpoints (generate a fresh one,
+#                      do NOT reuse the CA key); without it checkpoints are stored unsigned.
+#   LOG_PUBLIC_KEY     matching SPKI public key, served at /api/v1/log/public-key
 
 # Path-based routing under wares.lumen-lang.com/log/*
 # This avoids TLS issues with sub-subdomains and keeps all APIs under one domain.

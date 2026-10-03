@@ -21,8 +21,8 @@ import {
   verifyPackageSignature,
   generateInclusionProof,
   generateConsistencyProof,
-  computeHash
 } from './crypto';
+import { bytesToHex, leafHash, mth, signCheckpoint } from './merkle.js';
 
 // Main entry point
 export default {
@@ -169,7 +169,7 @@ export async function handleRequest(request, env) {
 
       // Add entry to log
       try {
-        const entry = await addLogEntry(env.wares_transparency_log, body);
+        const entry = await addLogEntry(env.wares_transparency_log, body, env);
         return json({
           inserted: true,
           index: entry.index,
@@ -183,12 +183,17 @@ export async function handleRequest(request, env) {
 
     // Verify inclusion proof
     router.get('/api/v1/log/proof/:index', async (req, params) => {
-      const index = parseInt(params.index);
-      if (isNaN(index)) {
+      if (!/^\d+$/.test(params.index)) {
         return error(400, 'Invalid index');
       }
+      const index = parseInt(params.index, 10);
+      const sizeParam = new URL(req.url).searchParams.get('tree_size');
+      if (sizeParam !== null && !/^\d+$/.test(sizeParam)) {
+        return error(400, 'Invalid tree_size');
+      }
+      const treeSize = sizeParam === null ? undefined : parseInt(sizeParam, 10);
 
-      const proof = await generateInclusionProof(env.wares_transparency_log, index);
+      const proof = await generateInclusionProof(env.wares_transparency_log, index, treeSize);
       if (!proof) {
         return error(404, 'Entry not found');
       }
@@ -198,12 +203,11 @@ export async function handleRequest(request, env) {
 
     // Get consistency proof
     router.get('/api/v1/log/consistency/:size1/:size2', async (req, params) => {
-      const size1 = parseInt(params.size1);
-      const size2 = parseInt(params.size2);
-
-      if (isNaN(size1) || isNaN(size2)) {
+      if (!/^\d+$/.test(params.size1) || !/^\d+$/.test(params.size2)) {
         return error(400, 'Invalid tree sizes');
       }
+      const size1 = parseInt(params.size1, 10);
+      const size2 = parseInt(params.size2, 10);
 
       const proof = await generateConsistencyProof(env.wares_transparency_log, size1, size2);
       if (!proof) {
@@ -211,6 +215,14 @@ export async function handleRequest(request, env) {
       }
 
       return json(proof);
+    });
+
+    // Public key that verifies checkpoint signatures (SPKI, as configured in LOG_PUBLIC_KEY)
+    router.get('/api/v1/log/public-key', async () => {
+      if (!env.LOG_PUBLIC_KEY) {
+        return error(404, 'No log public key configured');
+      }
+      return json({ algorithm: 'ECDSA P-256 / SHA-256 (IEEE P1363)', public_key: env.LOG_PUBLIC_KEY });
     });
 
     // Get checkpoint (signed tree head)
@@ -295,11 +307,11 @@ async function countLogEntries(db, { packageName, version, identity }) {
  * under concurrency: a writer that lost the race re-reads the tail (index and
  * prev_hash) and retries, so the hash chain can never fork.
  */
-async function addLogEntry(db, body) {
+async function addLogEntry(db, body, env) {
   let lastError;
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
-      return await tryAddLogEntry(db, body);
+      return await tryAddLogEntry(db, body, env);
     } catch (e) {
       lastError = e;
       if (!/UNIQUE constraint failed/i.test(String(e && e.message))) throw e;
@@ -308,7 +320,7 @@ async function addLogEntry(db, body) {
   throw lastError;
 }
 
-async function tryAddLogEntry(db, body) {
+async function tryAddLogEntry(db, body, env) {
   const uuid = crypto.randomUUID();
   const index = await getNextIndex(db);
   const prevEntry = index > 0 ? await getLogEntry(db, index - 1) : null;
@@ -349,7 +361,7 @@ async function tryAddLogEntry(db, body) {
   ).run();
 
   // Update checkpoint
-  await updateCheckpoint(db);
+  await updateCheckpoint(db, env);
 
   return {
     index,
@@ -374,26 +386,21 @@ async function getLatestCheckpoint(db) {
   return result;
 }
 
-async function updateCheckpoint(db) {
-  const count = await db.prepare('SELECT COUNT(*) as count FROM log_entries').first();
-  const treeSize = count?.count || 0;
-
-  // Get root hash (hash of all entry hashes)
+async function updateCheckpoint(db, env) {
   const entries = await db.prepare('SELECT this_hash FROM log_entries ORDER BY "index"').all();
-  const hashes = entries.results?.map(e => e.this_hash) || [];
-  const rootHash = await computeMerkleRoot(hashes);
+  const hashes = entries.results?.map((e) => e.this_hash) || [];
+  const treeSize = hashes.length;
+  const rootHash = bytesToHex(await mth(await Promise.all(hashes.map(leafHash))));
 
-  // Create signed tree head
+  // Signed with the log's own key (LOG_PRIVATE_KEY). Without a key the
+  // checkpoint is stored unsigned (empty signature) and clients must not trust it.
   const timestamp = Date.now();
-  const sthData = `${treeSize}-${rootHash}-${timestamp}`;
-  const signature = await signTreeHead(sthData);
+  const signature = env.LOG_PRIVATE_KEY ? await signCheckpoint(env.LOG_PRIVATE_KEY, treeSize, rootHash, timestamp) : '';
 
-  const stmt = db.prepare(`
-    INSERT INTO checkpoints (tree_size, root_hash, timestamp, signed_tree_head)
-    VALUES (?, ?, ?, ?)
-  `);
-
-  await stmt.bind(treeSize, rootHash, timestamp, signature).run();
+  await db
+    .prepare('INSERT INTO checkpoints (tree_size, root_hash, timestamp, signed_tree_head) VALUES (?, ?, ?, ?)')
+    .bind(treeSize, rootHash, timestamp, signature)
+    .run();
 }
 
 async function getEntriesSince(db, startIndex) {
@@ -412,44 +419,6 @@ async function computeEntryHash(index, entryBody, prevHash) {
   const data = `${index}:${entryBody}:${prevHash}`;
   const encoder = new TextEncoder();
   const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(data));
-  return Array.from(new Uint8Array(hashBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-async function computeMerkleRoot(hashes) {
-  if (hashes.length === 0) {
-    return '0'.repeat(64);
-  }
-  if (hashes.length === 1) {
-    return hashes[0];
-  }
-
-  const nextLevel = [];
-  for (let i = 0; i < hashes.length; i += 2) {
-    const left = hashes[i];
-    const right = hashes[i + 1] || left;
-    const combined = await hashPair(left, right);
-    nextLevel.push(combined);
-  }
-
-  return computeMerkleRoot(nextLevel);
-}
-
-async function hashPair(left, right) {
-  const data = left + right;
-  const encoder = new TextEncoder();
-  const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(data));
-  return Array.from(new Uint8Array(hashBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-async function signTreeHead(sthData) {
-  // In production, this would be signed with the log's private key
-  // For now, we just return a placeholder
-  const encoder = new TextEncoder();
-  const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(sthData + '-signed'));
   return Array.from(new Uint8Array(hashBuffer))
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');

@@ -1,3 +1,5 @@
+import { bytesToHex, consistencyProof, inclusionProof, leafHash, mth } from './merkle.js';
+
 const CERT_BEGIN = '-----BEGIN WARES CERTIFICATE-----';
 const CERT_SIG_BEGIN = '-----BEGIN SIGNATURE-----';
 const CERT_END = '-----END WARES CERTIFICATE-----';
@@ -129,51 +131,54 @@ export async function verifyPackageSignature(body, env, now = Date.now()) {
   }
 }
 
+/** Load the leaf hashes of the first `size` entries; null if the log is shorter or has gaps. */
+async function loadLeaves(db, size) {
+  const result = await db
+    .prepare('SELECT this_hash FROM log_entries WHERE "index" < ? ORDER BY "index"')
+    .bind(size)
+    .all();
+  const rows = result.results || [];
+  if (rows.length !== size) return null;
+  return Promise.all(rows.map((r) => leafHash(r.this_hash)));
+}
+
 /**
- * Generate an inclusion proof for a log entry
+ * RFC 6962 inclusion proof for entry `targetIndex` in the tree of the first
+ * `treeSize` entries (default: the whole log). Returns null if out of range.
  */
-export async function generateInclusionProof(db, targetIndex) {
-  // Simplified Merkle inclusion proof
-  const result = await db.prepare(`
-    SELECT "index", this_hash FROM log_entries ORDER BY "index"
-  `).all();
-
-  const hashes = result.results?.map(e => e.this_hash) || [];
-  if (targetIndex >= hashes.length) return null;
-
+export async function generateInclusionProof(db, targetIndex, treeSize) {
+  const count = (await db.prepare('SELECT COUNT(*) as count FROM log_entries').first())?.count || 0;
+  const size = treeSize === undefined ? count : treeSize;
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= size || size > count) return null;
+  const leaves = await loadLeaves(db, size);
+  if (!leaves) return null;
+  const root = await mth(leaves);
   return {
-    targetIndex,
-    treeSize: hashes.length,
-    leafHash: hashes[targetIndex],
-    proof: await getPath(targetIndex, hashes)
+    index: targetIndex,
+    tree_size: size,
+    leaf_hash: bytesToHex(leaves[targetIndex]),
+    root_hash: bytesToHex(root),
+    proof: (await inclusionProof(leaves, targetIndex, size)).map(bytesToHex),
   };
 }
 
 /**
- * Generate a consistency proof between two tree sizes
- * Proves that tree1 is a consistent prefix of tree2
+ * RFC 6962 consistency proof showing the first `size1` entries are a prefix
+ * of the first `size2`. Returns null for invalid sizes.
  */
 export async function generateConsistencyProof(db, size1, size2) {
-  if (size1 > size2) return null;
-
-  const result = await db.prepare(`
-    SELECT "index", this_hash FROM log_entries WHERE "index" < ? ORDER BY "index"
-  `).bind(size2).all();
-
-  const hashes = result.results?.map(e => e.this_hash) || [];
-
-  // Consistency proof logic (simplified for fixed-width Merkle if needed, but here we use the list of hashes)
-  // Real Rekor/Trillian logic is more complex, we'll provide a chain of hashes.
+  if (!Number.isInteger(size1) || !Number.isInteger(size2) || size1 < 0 || size1 > size2) return null;
+  const count = (await db.prepare('SELECT COUNT(*) as count FROM log_entries').first())?.count || 0;
+  if (size2 > count) return null;
+  const leaves = await loadLeaves(db, size2);
+  if (!leaves) return null;
   return {
     size1,
     size2,
-    proof: hashes.slice(0, size2) // Placeholder for real consistency path
+    root1: bytesToHex(await mth(leaves, 0, size1)),
+    root2: bytesToHex(await mth(leaves)),
+    proof: (await consistencyProof(leaves, size1, size2)).map(bytesToHex),
   };
-}
-
-async function getPath(index, hashes) {
-  // Mock path generation for now
-  return hashes.filter((_, i) => i !== index);
 }
 
 /**

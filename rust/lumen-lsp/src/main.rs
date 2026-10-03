@@ -15,6 +15,7 @@ mod goto_definition;
 mod hover;
 mod implementations;
 mod inlay_hints;
+mod position;
 mod rename;
 mod semantic_tokens;
 mod signature_help;
@@ -94,8 +95,17 @@ fn main() {
         ..Default::default()
     };
 
-    let caps_json = serde_json::to_value(capabilities).unwrap();
-    let _init_params = connection.initialize(caps_json).unwrap();
+    let caps_json = match serde_json::to_value(capabilities) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("lumen-lsp: cannot serialize server capabilities: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = connection.initialize(caps_json) {
+        eprintln!("lumen-lsp: initialize failed: {e}");
+        std::process::exit(1);
+    }
 
     let mut cache = CompilationCache::new();
     let mut diagnostics_latency = DiagnosticsLatency::default();
@@ -103,19 +113,70 @@ fn main() {
     for msg in &connection.receiver {
         match msg {
             Message::Notification(not) => {
-                handle_notification(&not, &connection, &mut cache, &mut diagnostics_latency);
+                // A bad notification must not take the whole server down.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_notification(&not, &connection, &mut cache, &mut diagnostics_latency);
+                }));
+                if outcome.is_err() {
+                    eprintln!(
+                        "lumen-lsp: panic while handling notification {}",
+                        not.method
+                    );
+                }
             }
             Message::Request(req) => {
-                if connection.handle_shutdown(&req).unwrap() {
-                    break;
+                match connection.handle_shutdown(&req) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(e) => {
+                        eprintln!("lumen-lsp: shutdown handshake failed: {e}");
+                        break;
+                    }
                 }
-                handle_request(&req, &connection, &cache);
+                dispatch_request(&req, &connection, &cache);
             }
             _ => {}
         }
     }
 
-    io_threads.join().unwrap();
+    if let Err(e) = io_threads.join() {
+        eprintln!("lumen-lsp: io threads ended with an error: {e}");
+    }
+}
+
+thread_local! {
+    /// Set by `send_response`; lets the dispatcher know whether a handler answered.
+    static REPLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn send_response(connection: &Connection, response: Response) {
+    REPLIED.with(|r| r.set(true));
+    let _ = connection.sender.send(Message::Response(response));
+}
+
+/// Run a request handler so that every request gets exactly one reply and a
+/// panic in a handler is reported as an error instead of killing the server.
+fn dispatch_request(req: &Request, connection: &Connection, cache: &CompilationCache) {
+    REPLIED.with(|r| r.set(false));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle_request(req, connection, cache)
+    }));
+    if REPLIED.with(|r| r.get()) {
+        return;
+    }
+    let (code, message) = match outcome {
+        Err(_) => {
+            eprintln!("lumen-lsp: panic while handling {}", req.method);
+            (-32603, format!("internal error handling {}", req.method))
+        }
+        Ok(true) => (-32602, format!("invalid params for {}", req.method)),
+        Ok(false) => (-32601, format!("method not found: {}", req.method)),
+    };
+    let _ = connection.sender.send(Message::Response(Response::new_err(
+        req.id.clone(),
+        code,
+        message,
+    )));
 }
 
 const DIAGNOSTIC_LATENCY_WINDOW: usize = 200;
@@ -330,6 +391,15 @@ fn handle_notification(
                 );
             }
         }
+    } else if not.method == notification::DidCloseTextDocument::METHOD {
+        if let Ok(params) = serde_json::from_value::<DidCloseTextDocumentParams>(not.params.clone())
+        {
+            // Drop the cached document and clear its diagnostics so closed files
+            // neither leak memory nor leave stale squiggles in the Problems panel.
+            let uri = params.text_document.uri;
+            cache.remove(&uri);
+            publish_diagnostics(connection, uri, Vec::new());
+        }
     }
 }
 
@@ -484,31 +554,20 @@ fn apply_text_document_changes(
     Some((updated, context))
 }
 
+/// Byte offset of an LSP position, clamped like the spec says: a column past
+/// the end of the line means the end of the line, and a line past the end of the
+/// document means the end of the document.
 fn lsp_position_to_byte_offset(text: &str, position: Position) -> Option<usize> {
-    let line_start = line_start_offset(text, position.line)?;
+    let Some(line_start) = line_start_offset(text, position.line) else {
+        return Some(text.len());
+    };
     let line_end = text[line_start..]
         .find('\n')
         .map(|idx| line_start + idx)
         .unwrap_or(text.len());
-    let line_slice = &text[line_start..line_end];
-
-    let mut utf16_col: u32 = 0;
-    for (idx, ch) in line_slice.char_indices() {
-        if utf16_col == position.character {
-            return Some(line_start + idx);
-        }
-
-        utf16_col = utf16_col.saturating_add(ch.len_utf16() as u32);
-        if utf16_col > position.character {
-            return None;
-        }
-    }
-
-    if utf16_col == position.character {
-        Some(line_end)
-    } else {
-        None
-    }
+    // Keep a CRLF terminator out of the line so a clamped column stays before it.
+    let line_slice = text[line_start..line_end].trim_end_matches('\r');
+    Some(line_start + position::utf16_col_to_byte(line_slice, position.character))
 }
 
 fn line_start_offset(text: &str, line: u32) -> Option<usize> {
@@ -621,7 +680,8 @@ fn publish_diagnostics(connection: &Connection, uri: Uri, diagnostics: Vec<Diagn
     let _ = connection.sender.send(Message::Notification(not));
 }
 
-fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCache) {
+/// Returns false when the method is not one this server implements.
+fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCache) -> bool {
     match req.method.as_str() {
         request::GotoDefinition::METHOD => {
             if let Ok(params) = serde_json::from_value::<GotoDefinitionParams>(req.params.clone()) {
@@ -640,7 +700,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: serde_json::to_value(result).ok(),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::GotoImplementation::METHOD => {
@@ -661,7 +721,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: serde_json::to_value(result).ok(),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::HoverRequest::METHOD => {
@@ -677,7 +737,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: serde_json::to_value(result).ok(),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::Completion::METHOD => {
@@ -693,7 +753,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: Some(serde_json::to_value(result).unwrap()),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::SemanticTokensFullRequest::METHOD => {
@@ -709,7 +769,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: serde_json::to_value(result).ok(),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::InlayHintRequest::METHOD => {
@@ -725,7 +785,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: Some(serde_json::to_value(result).unwrap()),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::DocumentSymbolRequest::METHOD => {
@@ -741,7 +801,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: serde_json::to_value(result).ok(),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::SignatureHelpRequest::METHOD => {
@@ -757,7 +817,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: serde_json::to_value(result).ok(),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::CodeActionRequest::METHOD => {
@@ -777,7 +837,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 result,
                 error: None,
             };
-            let _ = connection.sender.send(Message::Response(response));
+            send_response(connection, response);
         }
         request::FoldingRangeRequest::METHOD => {
             if let Ok(params) = serde_json::from_value::<FoldingRangeParams>(req.params.clone()) {
@@ -792,7 +852,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: Some(serde_json::to_value(result).unwrap()),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::Formatting::METHOD => {
@@ -810,7 +870,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                     result: Some(serde_json::to_value(result).unwrap()),
                     error: None,
                 };
-                let _ = connection.sender.send(Message::Response(response));
+                send_response(connection, response);
             }
         }
         request::References::METHOD => {
@@ -819,7 +879,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 result: Some(serde_json::to_value(Vec::<Location>::new()).unwrap()),
                 error: None,
             };
-            let _ = connection.sender.send(Message::Response(response));
+            send_response(connection, response);
         }
         request::WorkspaceSymbolRequest::METHOD => {
             let response = Response {
@@ -827,7 +887,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 result: Some(serde_json::to_value(Vec::<SymbolInformation>::new()).unwrap()),
                 error: None,
             };
-            let _ = connection.sender.send(Message::Response(response));
+            send_response(connection, response);
         }
         request::Rename::METHOD => {
             let result =
@@ -846,7 +906,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 result: Some(serde_json::to_value(result).unwrap()),
                 error: None,
             };
-            let _ = connection.sender.send(Message::Response(response));
+            send_response(connection, response);
         }
         request::PrepareRenameRequest::METHOD => {
             let result = if let Ok(params) =
@@ -865,10 +925,11 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 result: Some(serde_json::to_value(result).unwrap()),
                 error: None,
             };
-            let _ = connection.sender.send(Message::Response(response));
+            send_response(connection, response);
         }
-        _ => {}
+        _ => return false,
     }
+    true
 }
 
 #[cfg(test)]
@@ -944,8 +1005,67 @@ mod tests {
                     character: 2
                 }
             ),
-            None
+            // Between the surrogates of the emoji: snap back to its start.
+            Some(1)
         );
+    }
+
+    #[test]
+    fn out_of_range_positions_clamp_instead_of_dropping_the_edit() {
+        let text = "ab\ncd\n";
+        // Column past the end of line 0 clamps to the end of that line (before the newline).
+        assert_eq!(
+            lsp_position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 99
+                }
+            ),
+            Some(2)
+        );
+        // Line past the end of the document clamps to the end of the document.
+        assert_eq!(
+            lsp_position_to_byte_offset(
+                text,
+                Position {
+                    line: 99,
+                    character: 0
+                }
+            ),
+            Some(text.len())
+        );
+        // CRLF documents keep the clamped column before the \r.
+        assert_eq!(
+            lsp_position_to_byte_offset(
+                "ab\r\ncd",
+                Position {
+                    line: 0,
+                    character: 99
+                }
+            ),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn edits_with_out_of_range_positions_are_still_applied() {
+        let changes = [TextDocumentContentChangeEvent {
+            range: Some(Range {
+                start: Position {
+                    line: 0,
+                    character: 1,
+                },
+                end: Position {
+                    line: 0,
+                    character: 50,
+                },
+            }),
+            range_length: None,
+            text: "X".to_string(),
+        }];
+        let (updated, _) = apply_text_document_changes("abc\ndef", &changes).expect("applies");
+        assert_eq!(updated, "aX\ndef");
     }
 
     #[test]

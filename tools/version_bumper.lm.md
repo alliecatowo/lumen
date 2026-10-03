@@ -83,7 +83,7 @@ cell main() -> Null
   print("Found {len(toml_files)} Cargo.toml file(s):")
   print("")
 
-  let i = 0
+  let mut i = 0
   while i < len(toml_files)
     process_cargo_toml(toml_files[i])
     i = i + 1

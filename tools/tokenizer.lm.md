@@ -183,7 +183,7 @@ cell is_number(token: String) -> Bool
     return false
   end
   let chs = chars(token)
-  let i = 0
+  let mut i = 0
   while i < len(chs)
     if is_digit(chs[i]) == false
       if chs[i] != "."
@@ -228,13 +228,13 @@ cell main() -> Int
 
   # Split into lines and tokenize each
   let lines = split(source, "\n")
-  let token_count = 0
-  let line_idx = 0
+  let mut token_count = 0
+  let mut line_idx = 0
 
   while line_idx < len(lines)
     let line = lines[line_idx]
     let parts = split(trim(line), " ")
-    let j = 0
+    let mut j = 0
     while j < len(parts)
       let token = trim(parts[j])
       if len(token) > 0

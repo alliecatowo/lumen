@@ -26,7 +26,7 @@ cell merge_spans(a: Span, b: Span) -> Span
   let start = min(a.start, b.start)
   let end_pos = max(a.end_pos, b.end_pos)
   let line = min(a.start_line, b.start_line)
-  let col = 0
+  let mut col = 0
   if a.start_line <= b.start_line
     col = a.start_col
   else
@@ -83,7 +83,7 @@ cell format_diagnostic(diag: Diagnostic, src: Source) -> String
   let loc = "{src.filename}:{diag.span.start_line}:{diag.span.start_col}"
   let header = "{prefix}: {diag.message}\n  --> {loc}"
 
-  let result = header
+  let mut result = header
   for note in diag.notes
     result = result ++ "\n  = note: {note}"
   end

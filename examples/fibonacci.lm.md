@@ -17,8 +17,8 @@ cell fib_iterative(n: Int) -> Int
   if n < 2
     return n
   end
-  let prev = 0
-  let curr = 1
+  let mut prev = 0
+  let mut curr = 1
   let i = 2
   for _ in range(2, n + 1)
     let next = prev + curr
@@ -29,7 +29,7 @@ cell fib_iterative(n: Int) -> Int
 end
 
 cell fib_sequence(count: Int) -> list[Int]
-  let items = []
+  let mut items = []
   for i in range(0, count)
     let val = fib_recursive(i)
     items = append(items, val)

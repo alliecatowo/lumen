@@ -314,7 +314,7 @@ cell test_list_length() -> Bool
 end
 
 cell test_list_append() -> Bool
-  let items = [1, 2]
+  let mut items = [1, 2]
   items = append(items, 3)
   assert len(items) == 3
   assert items[2] == 3
@@ -575,14 +575,14 @@ cell test_to_set() -> Bool
 end
 
 cell test_set_add() -> Bool
-  let s = {1, 2}
+  let mut s = {1, 2}
   s = add(s, 3)
   assert contains(s, 3)
   return true
 end
 
 cell test_set_remove() -> Bool
-  let s = {1, 2, 3}
+  let mut s = {1, 2, 3}
   s = remove(s, 2)
   assert not contains(s, 2)
   return true

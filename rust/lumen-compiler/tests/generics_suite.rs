@@ -132,7 +132,7 @@ fn test_builtin_list_generic() {
     compile_ok(
         "
 cell sum(nums: list[Int]) -> Int
-  let total = 0
+  let mut total = 0
   for n in nums
     total = total + n
   end

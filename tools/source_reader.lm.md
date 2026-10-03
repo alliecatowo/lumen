@@ -9,9 +9,9 @@ cell main() -> Int
   let path = "tools/source_reader.lm.md"
   let content = read_file(path)
   let lines = split(content, "\n")
-  let in_block = false
-  let block_num = 0
-  let i = 0
+  let mut in_block = false
+  let mut block_num = 0
+  let mut i = 0
 
   while i < len(lines)
     let line = lines[i]

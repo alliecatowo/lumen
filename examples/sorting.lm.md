@@ -10,8 +10,8 @@ cell min_value(items: list[Int]) -> Int
   if n == 0
     return 0
   end
-  let min_val = items[0]
-  let i = 1
+  let mut min_val = items[0]
+  let mut i = 1
   while i < n
     let val = items[i]
     if val < min_val
@@ -27,8 +27,8 @@ cell max_value(items: list[Int]) -> Int
   if n == 0
     return 0
   end
-  let max_val = items[0]
-  let i = 1
+  let mut max_val = items[0]
+  let mut i = 1
   while i < n
     let val = items[i]
     if val > max_val
@@ -45,16 +45,16 @@ cell selection_sort(items: list[Int]) -> list[Int]
     return items
   end
 
-  let sorted = []
-  let remaining = items
+  let mut sorted = []
+  let mut remaining = items
 
   while len(remaining) > 0
     let min_val = min_value(remaining)
     sorted = append(sorted, min_val)
 
-    let new_remaining = []
-    let found = false
-    let i = 0
+    let mut new_remaining = []
+    let mut found = false
+    let mut i = 0
     while i < len(remaining)
       let val = remaining[i]
       if val == min_val and not found
@@ -76,9 +76,9 @@ cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
     return [value]
   end
 
-  let result = []
-  let inserted = false
-  let i = 0
+  let mut result = []
+  let mut inserted = false
+  let mut i = 0
 
   while i < n
     let curr = sorted[i]
@@ -103,8 +103,8 @@ cell insertion_sort(items: list[Int]) -> list[Int]
     return items
   end
 
-  let sorted = []
-  let i = 0
+  let mut sorted = []
+  let mut i = 0
   while i < n
     sorted = insert_sorted(sorted, items[i])
     i = i + 1
@@ -118,7 +118,7 @@ cell is_sorted(items: list[Int]) -> Bool
     return true
   end
 
-  let i = 0
+  let mut i = 0
   while i < n - 1
     let a = get(items, i)
     let b = get(items, i + 1)

@@ -19,7 +19,7 @@ end
 
 cell tokenize(input: String) -> list[Token]
   let chars = split(input, "")
-  let tokens: list[Token] = []
+  let mut tokens: list[Token] = []
   for ch in chars
     if ch != " "
       let kind = classify_char(ch)

@@ -349,7 +349,7 @@ fn t163_basic_variadic_call() {
         "variadic_basic",
         r#"
 cell sum(...nums: Int) -> Int
-  let total = 0
+  let mut total = 0
   for n in nums
     total = total + n
   end
@@ -404,7 +404,7 @@ fn t163_variadic_mixed_params() {
         "variadic_mixed",
         r#"
 cell format_msg(prefix: String, ...values: Int) -> String
-  let result = prefix
+  let mut result = prefix
   for v in values
     result = result
   end

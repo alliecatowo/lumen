@@ -5,8 +5,8 @@ pretty-printing with proper nesting for objects and arrays.
 
 ```lumen
 cell repeat_str(s: String, n: Int) -> String
-  let result = ""
-  let i = 0
+  let mut result = ""
+  let mut i = 0
   while i < n
     result = result + s
     i = i + 1
@@ -33,7 +33,7 @@ cell pretty_print(val: Any, depth: Int) -> String
   end
   if t == "string"
     # Escape quotes inside the string
-    let escaped = replace(val, "\\", "\\\\")
+    let mut escaped = replace(val, "\\", "\\\\")
     escaped = replace(escaped, "\"", "\\\"")
     return "\"" + escaped + "\""
   end
@@ -42,8 +42,8 @@ cell pretty_print(val: Any, depth: Int) -> String
     if n == 0
       return "[]"
     end
-    let parts = []
-    let i = 0
+    let mut parts = []
+    let mut i = 0
     while i < n
       let item_str = pretty_print(val[i], depth + 1)
       parts = append(parts, inner + item_str)
@@ -57,8 +57,8 @@ cell pretty_print(val: Any, depth: Int) -> String
     if n == 0
       return "{}"
     end
-    let parts = []
-    let i = 0
+    let mut parts = []
+    let mut i = 0
     while i < n
       let k = ks[i]
       let v_str = pretty_print(val[k], depth + 1)
@@ -76,8 +76,8 @@ end
 cell main() -> Null
   # Try to read a JSON file — use a sample if no file exists
   let path = "package.json"
-  let content = ""
-  let using_sample = false
+  let mut content = ""
+  let mut using_sample = false
 
   if exists(path)
     content = read_file(path)

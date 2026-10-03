@@ -5,11 +5,11 @@ Runs test cells and reports results.
 ```lumen
 cell run_tests(dir: string) -> Null
   let files = glob(path_join(dir, "**/*.lm.md"))
-  let passed = 0
-  let failed = 0
-  let total = 0
+  let mut passed = 0
+  let mut failed = 0
+  let mut total = 0
 
-  let i = 0
+  let mut i = 0
   while i < len(files)
     let f = files[i]
     let content = read_file(f)

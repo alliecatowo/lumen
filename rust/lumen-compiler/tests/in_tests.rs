@@ -358,7 +358,7 @@ fn in_while_condition() {
 cell main() -> Int
   let mut items = [1, 2, 3, 4, 5]
   let target = 3
-  let count = 0
+  let mut count = 0
   while target in items
     items = [1, 2]
     count = count + 1
@@ -397,7 +397,7 @@ fn in_for_loop_regression() {
         "in_for_loop_regression",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for x in [1, 2, 3]
     sum = sum + x
   end
@@ -413,7 +413,7 @@ fn in_for_loop_with_range() {
         "in_for_range",
         r#"
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for x in 1..10
     sum = sum + x
   end
@@ -459,7 +459,7 @@ fn in_multiple_same_scope() {
 cell main() -> Int
   let a = [1, 2, 3]
   let b = [4, 5, 6]
-  let count = 0
+  let mut count = 0
   if 2 in a
     count = count + 1
   end

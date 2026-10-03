@@ -16,7 +16,7 @@ end
 
 cell title_case(s: String) -> String
   let words = split(s, " ")
-  let result = []
+  let mut result = []
   for word in words
     result = append(result, capitalize(word))
   end
@@ -46,8 +46,8 @@ cell repeat_string(s: String, count: Int) -> String
   if count <= 0
     return ""
   end
-  let result = ""
-  let i = 0
+  let mut result = ""
+  let mut i = 0
   while i < count
     result = result + s
     i = i + 1
@@ -60,8 +60,8 @@ cell reverse_string(s: String) -> String
   if n <= 1
     return s
   end
-  let result = ""
-  let i = n - 1
+  let mut result = ""
+  let mut i = n - 1
   while i >= 0
     result = result + slice(s, i, i + 1)
     i = i - 1

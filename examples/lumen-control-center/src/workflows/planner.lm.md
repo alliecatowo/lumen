@@ -36,13 +36,13 @@ cell build_planner_snapshot(
   research_tool: String,
   notify_tool: String
 ) -> PlannerSnapshot
-  let steps: list[PlannedStep] = []
+  let mut steps: list[PlannedStep] = []
   steps = append(steps, make_step(1, "planning", planning_tool, "draft rollout plan and risk priorities"))
   steps = append(steps, make_step(2, "research", research_tool, "collect active incident context from issue tracker"))
   steps = append(steps, make_step(3, "notify", notify_tool, "publish dry-run summary to release channel"))
 
   let preview = "model " + target_model + " prepared " + string(len(steps)) + " staged actions for " + string(item_count) + " tasks"
-  let requires_manual_review = false
+  let mut requires_manual_review = false
   if mode != "dry-run"
     requires_manual_review = true
   end

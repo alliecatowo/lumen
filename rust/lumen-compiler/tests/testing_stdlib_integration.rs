@@ -28,7 +28,7 @@ fn testing_helpers_compile_in_markdown_program() {
 import std.testing: create_test_suite, add_test, assert_eq, assert_true, assert_contains, assert_not_contains, assert_length, summarize_tests, all_passed
 
 cell main() -> Bool
-  let tests = create_test_suite()
+  let mut tests = create_test_suite()
   tests = add_test(tests, assert_eq(2 + 2, 4, "2 + 2 == 4"))
   tests = add_test(tests, assert_true(3 < 5, "3 < 5"))
   tests = add_test(tests, assert_contains([1, 2, 3], 2, "contains list value"))
@@ -60,7 +60,7 @@ fn testing_helpers_compile_in_raw_program() {
 import std.testing: create_test_suite, add_test, assert_false, assert_not_empty, assert_empty, summarize_tests
 
 cell main() -> Bool
-  let tests = create_test_suite()
+  let mut tests = create_test_suite()
   tests = add_test(tests, assert_false(false, "false is false"))
   tests = add_test(tests, assert_not_empty([1], "list is not empty"))
   tests = add_test(tests, assert_empty([], "empty list is empty"))

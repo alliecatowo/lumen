@@ -1,7 +1,7 @@
 # String operations — 100K concatenations
 cell string_concat(count: Int) -> String
-  let result = ""
-  let i = 0
+  let mut result = ""
+  let mut i = 0
   while i < count
     result = result + "x"
     i = i + 1

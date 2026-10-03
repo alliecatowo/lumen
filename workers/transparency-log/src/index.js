@@ -27,6 +27,53 @@ import {
 // Main entry point
 export default {
   async fetch(request, env, ctx) {
+    return handleRequest(request, env);
+  },
+};
+
+const NAME_PART = '[a-z0-9]+(?:-[a-z0-9]+)*';
+const PACKAGE_NAME_RE = new RegExp(`^(?:@${NAME_PART}/)?${NAME_PART}$`);
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const CONTENT_HASH_RE = /^sha256:[0-9a-f]{64}$/;
+const MAX_FIELD_LEN = 16 * 1024;
+const MAX_BODY_BYTES = 64 * 1024;
+
+/** Constant-time string comparison. */
+function timingSafeEqual(a, b) {
+  const enc = new TextEncoder();
+  const x = enc.encode(a);
+  const y = enc.encode(b);
+  let diff = x.length ^ y.length;
+  const n = Math.max(x.length, y.length);
+  for (let i = 0; i < n; i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  return diff === 0;
+}
+
+/** Parse an integer query parameter, clamped to [min, max]; falls back to `dflt`. */
+export function intParam(raw, dflt, min, max) {
+  if (raw === null || raw === undefined || raw === '') return dflt;
+  if (!/^-?\d+$/.test(raw)) return dflt;
+  return Math.min(Math.max(parseInt(raw, 10), min), max);
+}
+
+/** Validate a POST /log/entries body; returns an error message or null. */
+export function validateEntry(body) {
+  if (!body || typeof body !== 'object') return 'Body must be a JSON object';
+  const required = ['package_name', 'version', 'content_hash', 'identity', 'signature', 'certificate'];
+  for (const field of required) {
+    if (!body[field]) return `Missing required field: ${field}`;
+    if (typeof body[field] !== 'string') return `Field must be a string: ${field}`;
+    if (body[field].length > MAX_FIELD_LEN) return `Field too long: ${field}`;
+  }
+  if (body.package_name.length > 64 || !PACKAGE_NAME_RE.test(body.package_name)) return 'Invalid package_name';
+  if (body.version.length > 64 || !SEMVER_RE.test(body.version)) return 'Invalid version';
+  if (!CONTENT_HASH_RE.test(body.content_hash)) return 'content_hash must be sha256:<64 hex>';
+  if (body.identity.length > 256) return 'Invalid identity';
+  return null;
+}
+
+export async function handleRequest(request, env) {
+  {
     const router = new Router();
 
     // Health check
@@ -67,8 +114,8 @@ export default {
       const packageName = url.searchParams.get('package');
       const version = url.searchParams.get('version');
       const identity = url.searchParams.get('identity');
-      const limit = Math.min(parseInt(url.searchParams.get('limit') || '100'), 1000);
-      const offset = parseInt(url.searchParams.get('offset') || '0');
+      const limit = intParam(url.searchParams.get('limit'), 100, 1, 1000);
+      const offset = intParam(url.searchParams.get('offset'), 0, 0, 1_000_000_000);
 
       const entries = await queryLogEntries(env.wares_transparency_log, {
         packageName, version, identity, limit, offset
@@ -86,26 +133,38 @@ export default {
 
     // Submit new entry (called by registry after package publish)
     router.post('/api/v1/log/entries', async (req) => {
-      // Verify API key
+      // Verify API key (constant time; an unset secret rejects everything)
       const apiKey = req.headers.get('X-API-Key');
-      if (!apiKey || apiKey !== env.REGISTRY_API_KEY) {
+      if (!apiKey || !env.REGISTRY_API_KEY || !timingSafeEqual(apiKey, env.REGISTRY_API_KEY)) {
         return error(401, 'Unauthorized');
       }
 
-      const body = await req.json();
-
-      // Validate required fields
-      const required = ['package_name', 'version', 'content_hash', 'identity', 'signature', 'certificate'];
-      for (const field of required) {
-        if (!body[field]) {
-          return error(400, `Missing required field: ${field}`);
-        }
+      const declared = parseInt(req.headers.get('Content-Length') || '0', 10);
+      if (declared > MAX_BODY_BYTES) {
+        return error(413, 'Request body too large');
+      }
+      let body;
+      try {
+        const raw = await req.text();
+        if (raw.length > MAX_BODY_BYTES) return error(413, 'Request body too large');
+        body = JSON.parse(raw);
+      } catch {
+        return error(400, 'Invalid JSON body');
       }
 
-      // Verify the package signature
-      const sigValid = await verifyPackageSignature(body);
-      if (!sigValid) {
-        return error(400, 'Invalid package signature');
+      const invalid = validateEntry(body);
+      if (invalid) {
+        return error(400, invalid);
+      }
+
+      // Verify the CA-issued certificate, identity binding and package signature
+      const sig = await verifyPackageSignature(body, env);
+      if (!sig.ok) {
+        if (sig.misconfigured) {
+          console.error(sig.reason);
+          return error(503, 'Log is not configured to verify signatures');
+        }
+        return error(400, `Invalid package signature: ${sig.reason}`);
       }
 
       // Add entry to log
@@ -117,7 +176,8 @@ export default {
           uuid: entry.uuid,
         }, 201);
       } catch (e) {
-        return error(500, `Failed to append to log: ${e.message}`);
+        console.error('Failed to append to log:', e);
+        return error(500, 'Failed to append to log');
       }
     });
 
@@ -163,8 +223,8 @@ export default {
     });
 
     return router.handle(request);
-  },
-};
+  }
+}
 
 async function getLogCount(db) {
   const result = await db.prepare('SELECT COUNT(*) as count FROM log_entries').first();
@@ -230,7 +290,25 @@ async function countLogEntries(db, { packageName, version, identity }) {
   return result?.count || 0;
 }
 
+/**
+ * Append an entry. The UNIQUE constraint on "index" makes allocation safe
+ * under concurrency: a writer that lost the race re-reads the tail (index and
+ * prev_hash) and retries, so the hash chain can never fork.
+ */
 async function addLogEntry(db, body) {
+  let lastError;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      return await tryAddLogEntry(db, body);
+    } catch (e) {
+      lastError = e;
+      if (!/UNIQUE constraint failed/i.test(String(e && e.message))) throw e;
+    }
+  }
+  throw lastError;
+}
+
+async function tryAddLogEntry(db, body) {
   const uuid = crypto.randomUUID();
   const index = await getNextIndex(db);
   const prevEntry = index > 0 ? await getLogEntry(db, index - 1) : null;

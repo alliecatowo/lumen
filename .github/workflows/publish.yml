@@ -1,58 +1,170 @@
 name: Publish Ecosystem
 
+# Registry auth is OIDC only (trusted publishing), no long-lived tokens:
+#   - crates.io: trusted publisher (repo alliecatowo/lumen, workflow publish.yml,
+#     environment `crates-io`), exchanged for a short-lived token by
+#     rust-lang/crates-io-auth-action.
+#   - npm: trusted publisher (workflow publish.yml, environment `npm`) for
+#     tree-sitter-lumen, used by `npm publish` directly (npm >= 11.5.1).
+
 on:
   push:
     tags:
       - 'v*'
   # v0.5.0 is already tagged (and tags pushed by auto-release with GITHUB_TOKEN
-  # do not trigger workflows), so the first crates.io publish is a manual run:
-  #   gh workflow run publish.yml -R alliecatowo/lumen
+  # do not trigger workflows), so publishing is also a manual run:
+  #   gh workflow run publish.yml -R alliecatowo/lumen -f target=crates
+  #   gh workflow run publish.yml -R alliecatowo/lumen -f target=npm
+  # Use -f dry_run=true to exercise auth and packaging without publishing.
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'What to publish'
+        type: choice
+        options: [all, crates, npm]
+        default: all
+      dry_run:
+        description: 'Dry run (authenticate and package, but do not publish)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   publish-rust:
     name: Publish Rust Crates
+    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'crates'
     runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write # crates.io trusted publishing
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      
+
+      - name: Authenticate to crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       # Publishes every non-private workspace crate in dependency order and
       # waits for the index between crates. Already-published versions are an
       # error, so re-runs after a partial failure need the failed crate only.
       - name: Publish workspace crates to crates.io
-        run: cargo publish --workspace
+        run: cargo publish --workspace ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-  publish-npm:
-    name: Publish NPM Packages
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+  # tree-sitter-lumen ships a native Node addon. Build the parser and a
+  # prebuilt binary per platform (prebuildify, N-API so one binary covers every
+  # Node version), then publish them together in one tarball. node-gyp-build
+  # loads the prebuild at require() time.
+  build-grammar:
+    name: Prebuild tree-sitter-lumen (${{ matrix.os }})
+    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'npm'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15-intel, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: tree-sitter-lumen
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '20.x'
+          node-version: '22.x'
+      # Scripts stay off for `npm ci` (the package's own `install` script needs
+      # the generated parser); tree-sitter-cli fetches its binary on rebuild.
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild tree-sitter-cli tree-sitter
+      - name: Generate the parser
+        run: npx tree-sitter generate
+      - name: Build the prebuilt addon
+        run: npx prebuildify --napi --strip
+      - name: Smoke test the prebuild
+        run: |
+          node -e "
+            const lang = require('./');
+            const Parser = require('tree-sitter');
+            const p = new Parser();
+            p.setLanguage(lang);
+            const tree = p.parse(require('fs').readFileSync('examples/sample.lm', 'utf8'));
+            console.log(lang.name, tree.rootNode.type);
+            if (lang.name !== 'lumen') process.exit(1);
+          "
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prebuilds-${{ matrix.os }}
+          path: tree-sitter-lumen/prebuilds
+          if-no-files-found: error
+
+  publish-tree-sitter:
+    name: Publish tree-sitter-lumen
+    needs: build-grammar
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    defaults:
+      run:
+        working-directory: tree-sitter-lumen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild tree-sitter-cli
+      - name: Generate the parser (src/ is shipped in the tarball)
+        run: npx tree-sitter generate
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: prebuilds-*
+          merge-multiple: true
+          path: tree-sitter-lumen/prebuilds
+      - name: Show the package contents
+        run: |
+          find prebuilds -type f | sort
+          npm pack --dry-run --ignore-scripts 2>&1 | tail -40
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22's bundled npm is older.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest && npm --version
+      - name: Publish tree-sitter-lumen
+        if: github.event_name == 'push' || !inputs.dry_run
+        run: npm publish --provenance --access public --ignore-scripts
+
+  publish-wasm:
+    name: Publish lumen-wasm
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-      - name: Publish tree-sitter-lumen
-        run: |
-          cd tree-sitter-lumen
-          npm publish --provenance --access public
-        # NODE_AUTH_TOKEN not required if "Trusted Publishing" is configured on npmjs.com
-
-      - name: Build and Publish lumen-wasm
+      - name: Build lumen-wasm
         run: |
           cd rust/lumen-wasm
           wasm-pack build --target bundler
-          cd pkg
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest && npm --version
+      - name: Publish lumen-wasm
+        run: |
+          cd rust/lumen-wasm/pkg
           npm publish --provenance --access public

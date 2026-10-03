@@ -1,53 +1,131 @@
+const CERT_BEGIN = '-----BEGIN WARES CERTIFICATE-----';
+const CERT_SIG_BEGIN = '-----BEGIN SIGNATURE-----';
+const CERT_END = '-----END WARES CERTIFICATE-----';
+/** Allowed clock skew when checking certificate validity (ms). */
+const CLOCK_SKEW_MS = 60 * 1000;
+
+function b64ToBytes(b64) {
+  const clean = String(b64).replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) throw new Error('invalid base64');
+  return Uint8Array.from(atob(clean), (c) => c.charCodeAt(0));
+}
+
+/** Parse a base64 or PEM (`BEGIN PUBLIC KEY`) SPKI public key. */
+export function parseSpki(keyText) {
+  const b64 = String(keyText)
+    .replace(/-----BEGIN PUBLIC KEY-----/, '')
+    .replace(/-----END PUBLIC KEY-----/, '');
+  return b64ToBytes(b64);
+}
+
 /**
- * Verify a package signature using ECDSA P-256
- * Proves that the package content was signed by the identity in the certificate
+ * Convert an ASN.1 DER ECDSA signature to the IEEE P1363 (r || s) form that
+ * WebCrypto expects. Signatures already 64 bytes long are returned as is.
  */
-export async function verifyPackageSignature(body) {
+export function normalizeEcdsaSignature(sig) {
+  if (sig.length === 64) return sig;
+  if (sig[0] !== 0x30) throw new Error('unrecognised signature encoding');
+  let i = 2;
+  if (sig[1] & 0x80) i = 2 + (sig[1] & 0x7f);
+  const readInt = () => {
+    if (sig[i] !== 0x02) throw new Error('bad DER integer');
+    const len = sig[i + 1];
+    let v = sig.slice(i + 2, i + 2 + len);
+    i += 2 + len;
+    while (v.length > 32 && v[0] === 0) v = v.slice(1);
+    if (v.length > 32) throw new Error('integer too large');
+    const out = new Uint8Array(32);
+    out.set(v, 32 - v.length);
+    return out;
+  };
+  const r = readInt();
+  const s = readInt();
+  const raw = new Uint8Array(64);
+  raw.set(r, 0);
+  raw.set(s, 32);
+  return raw;
+}
+
+/**
+ * Verify a log entry's package signature. Fails closed.
+ *
+ * 1. The certificate must carry a CA signature that verifies under
+ *    `env.CA_PUBLIC_KEY` (SPKI, base64 or PEM) over the exact certificate JSON.
+ * 2. The certificate must be valid at `now` and its subject must equal the
+ *    entry's `identity`.
+ * 3. `signature` must verify under the certificate's public key over
+ *    `content_hash`.
+ *
+ * Returns `{ ok: true }` or `{ ok: false, reason }`.
+ */
+export async function verifyPackageSignature(body, env, now = Date.now()) {
   try {
-    const { signature, certificate, content_hash } = body;
+    if (!env || !env.CA_PUBLIC_KEY) {
+      return { ok: false, reason: 'CA_PUBLIC_KEY is not configured', misconfigured: true };
+    }
+    const { signature, certificate, content_hash, identity } = body;
+    if ([signature, certificate, content_hash, identity].some((v) => typeof v !== 'string')) {
+      return { ok: false, reason: 'signature, certificate, content_hash and identity must be strings' };
+    }
 
-    // 1. Parse the Wares Certificate
-    const lines = certificate.split('\n');
-    const startIdx = lines.indexOf('-----BEGIN WARES CERTIFICATE-----');
-    const sigStartIdx = lines.indexOf('-----BEGIN SIGNATURE-----');
-    const endIdx = lines.indexOf('-----END WARES CERTIFICATE-----');
-
-    if (startIdx === -1 || sigStartIdx === -1 || endIdx === -1) return false;
-
-    const certJsonB64 = lines.slice(startIdx + 1, sigStartIdx).join('').trim();
-    const certSigB64 = lines.slice(sigStartIdx + 1, endIdx).join('').trim();
-
-    const certJsonStr = atob(certJsonB64);
+    // Parse the Wares Certificate
+    const lines = certificate.split('\n').map((l) => l.trim());
+    const startIdx = lines.indexOf(CERT_BEGIN);
+    const sigStartIdx = lines.indexOf(CERT_SIG_BEGIN);
+    const endIdx = lines.indexOf(CERT_END);
+    if (startIdx === -1 || sigStartIdx === -1 || endIdx === -1 || !(startIdx < sigStartIdx && sigStartIdx < endIdx)) {
+      return { ok: false, reason: 'malformed certificate' };
+    }
+    const certJsonStr = new TextDecoder().decode(b64ToBytes(lines.slice(startIdx + 1, sigStartIdx).join('')));
+    const certSig = normalizeEcdsaSignature(b64ToBytes(lines.slice(sigStartIdx + 1, endIdx).join('')));
     const certData = JSON.parse(certJsonStr);
 
-    // 2. Verify CA Signature (Optional for now if CA_PUBLIC_KEY not set)
-    // In production, we'd import CA_PUBLIC_KEY and call crypto.subtle.verify
-
-    // 3. Extract user's public key (SPKI) from certificate
-    const userPubKeyB64 = certData.public_key;
-    const userPubKeyBuffer = Uint8Array.from(atob(userPubKeyB64), c => c.charCodeAt(0));
-
-    const userKey = await crypto.subtle.importKey(
+    // 1. CA signature over the exact certificate bytes
+    const caKey = await crypto.subtle.importKey(
       'spki',
-      userPubKeyBuffer,
+      parseSpki(env.CA_PUBLIC_KEY),
       { name: 'ECDSA', namedCurve: 'P-256' },
       false,
-      ['verify']
+      ['verify'],
     );
+    const caOk = await crypto.subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      caKey,
+      certSig,
+      new TextEncoder().encode(certJsonStr),
+    );
+    if (!caOk) return { ok: false, reason: 'certificate is not signed by the CA' };
 
-    // 4. Verify user's signature over the content_hash
-    const sigBuffer = Uint8Array.from(atob(signature), c => c.charCodeAt(0));
-    const contentBuffer = new TextEncoder().encode(content_hash);
+    // 2. Validity window and identity binding
+    const notBefore = Date.parse(certData.not_before);
+    const notAfter = Date.parse(certData.not_after);
+    if (!Number.isFinite(notBefore) || !Number.isFinite(notAfter)) {
+      return { ok: false, reason: 'certificate has no validity window' };
+    }
+    if (now < notBefore - CLOCK_SKEW_MS || now > notAfter + CLOCK_SKEW_MS) {
+      return { ok: false, reason: 'certificate is expired or not yet valid' };
+    }
+    if (typeof certData.subject !== 'string' || certData.subject !== identity) {
+      return { ok: false, reason: 'identity does not match certificate subject' };
+    }
 
-    return await crypto.subtle.verify(
+    // 3. Package signature under the certificate's key
+    const userKey = await crypto.subtle.importKey(
+      'spki',
+      b64ToBytes(certData.public_key),
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    );
+    const sigOk = await crypto.subtle.verify(
       { name: 'ECDSA', hash: 'SHA-256' },
       userKey,
-      sigBuffer,
-      contentBuffer
+      normalizeEcdsaSignature(b64ToBytes(signature)),
+      new TextEncoder().encode(content_hash),
     );
+    return sigOk ? { ok: true } : { ok: false, reason: 'package signature does not verify' };
   } catch (e) {
-    console.error('Signature verification failed:', e);
-    return false;
+    return { ok: false, reason: 'signature verification failed' };
   }
 }
 

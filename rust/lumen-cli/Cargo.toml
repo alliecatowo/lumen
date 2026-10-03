@@ -38,7 +38,7 @@ rustyline = "15"
 
 # Authentication dependencies
 keyring = { version = "3", optional = true }
-ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
+ed25519-dalek = { version = "3", features = ["rand_core"], optional = true }
 rand = { version = "0.8", optional = true }
 base64 = "0.23"
 rpassword = "7"

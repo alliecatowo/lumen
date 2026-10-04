@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-cli"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-compiler"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-lsp"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-runtime"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "base64 0.23.1",
  "bincode",

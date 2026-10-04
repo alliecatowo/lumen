@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.3] - 2026-10-04
+
+### Changed (breaking)
+
+- Importing a symbol that is not declared `pub` is an error (E0128); wildcard imports bring in only `pub` symbols.
+  `stdlib` is now `pub`. `OwnershipCheckMode` defaults to `Off`.
+
+### Added
+
+- `lumen run --no-jit`; `lumen emit` writes its status lines to stderr so stdout is valid JSON.
+- Registry: invite-only publishing (`ALLOWED_PUBLISHERS`), strict package-archive validation, download hardening
+  headers, and `DELETE /v1/wares/<name>[/<version>]` to yank. `wares` verifies package signatures locally.
+- `lumen-wasm` `run` has an instruction budget.
+
+### Fixed
+
+- Benchmarks `sort`, `nbody` and `matrix_mult` match the reference workloads; large list/map literals, map spread,
+  record field and parameter defaults, named arguments bound by name.
+
 ## [0.6.2] - 2026-10-03
 
 ### Fixed

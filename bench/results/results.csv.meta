@@ -1,0 +1,13 @@
+date: 2026-10-04T00:44:25Z
+repo_commit: bdfa80779ec7
+repo_dirty: no
+lumen: lumen 0.6.1
+lumen_binary: /home/allie/develop/lumen/.claude/worktrees/fix-loop-hoist/target/release/lumen
+cpu: AMD Ryzen 9 6900HX with Radeon Graphics
+cores: 16
+os: Linux 7.2.8-200.fc44.x86_64 x86_64
+runs: 3
+gcc: gcc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)
+rustc: rustc 1.99.0 (b940084d7 2026-09-28)
+go: go version go1.26.8 linux/amd64
+python: Python 3.14.7

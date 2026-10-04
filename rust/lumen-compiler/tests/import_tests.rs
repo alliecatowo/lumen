@@ -4,7 +4,7 @@ use lumen_compiler::compile_with_imports;
 fn test_import_cell() {
     let lib_source = r#"
 ```lumen
-cell square(x: Int) -> Int
+pub cell square(x: Int) -> Int
   return x * x
 end
 ```
@@ -13,7 +13,7 @@ end
 ```lumen
 import mathlib: square
 
-cell main() -> Int
+pub cell main() -> Int
   return square(5)
 end
 ```
@@ -34,11 +34,11 @@ end
     // Imported cells are merged into the output module for linking
     assert!(
         module.cells.iter().any(|c| c.name == "main"),
-        "Expected 'main' cell in output"
+        "Expected 'main' pub cell in output"
     );
     assert!(
         module.cells.iter().any(|c| c.name == "square"),
-        "Expected imported 'square' cell in output"
+        "Expected imported 'square' pub cell in output"
     );
 }
 
@@ -46,7 +46,7 @@ end
 fn test_import_record() {
     let lib_source = r#"
 ```lumen
-record Point
+pub record Point
   x: Int
   y: Int
 end
@@ -56,7 +56,7 @@ end
 ```lumen
 import geometry: Point
 
-cell origin() -> Point
+pub cell origin() -> Point
   return Point(x: 0, y: 0)
 end
 ```
@@ -76,7 +76,7 @@ end
     let module = result.unwrap();
     assert!(
         module.cells.iter().any(|c| c.name == "origin"),
-        "Expected 'origin' cell in output"
+        "Expected 'origin' pub cell in output"
     );
 }
 
@@ -143,7 +143,7 @@ end
 fn test_aliased_import() {
     let lib_source = r#"
 ```lumen
-cell compute(x: Int) -> Int
+pub cell compute(x: Int) -> Int
   return x + 10
 end
 ```
@@ -152,7 +152,7 @@ end
 ```lumen
 import mathlib: compute as calc
 
-cell main() -> Int
+pub cell main() -> Int
   return calc(5)
 end
 ```
@@ -173,11 +173,11 @@ end
     // Imported cells are merged into output for linking
     assert!(
         module.cells.iter().any(|c| c.name == "main"),
-        "Expected 'main' cell in output"
+        "Expected 'main' pub cell in output"
     );
     assert!(
         module.cells.iter().any(|c| c.name == "compute"),
-        "Expected imported 'compute' cell in output"
+        "Expected imported 'compute' pub cell in output"
     );
 }
 
@@ -185,11 +185,11 @@ end
 fn test_import_multiple_symbols() {
     let lib_source = r#"
 ```lumen
-cell add(x: Int, y: Int) -> Int
+pub cell add(x: Int, y: Int) -> Int
   return x + y
 end
 
-cell multiply(x: Int, y: Int) -> Int
+pub cell multiply(x: Int, y: Int) -> Int
   return x * y
 end
 ```
@@ -198,7 +198,7 @@ end
 ```lumen
 import math: add, multiply
 
-cell main() -> Int
+pub cell main() -> Int
   return add(multiply(2, 3), 4)
 end
 ```
@@ -221,11 +221,11 @@ end
 fn test_import_wildcard() {
     let lib_source = r#"
 ```lumen
-cell add(x: Int, y: Int) -> Int
+pub cell add(x: Int, y: Int) -> Int
   return x + y
 end
 
-record Point
+pub record Point
   x: Int
   y: Int
 end
@@ -235,7 +235,7 @@ end
 ```lumen
 import math: *
 
-cell main() -> Point
+pub cell main() -> Point
   let x = add(1, 2)
   return Point(x: x, y: 0)
 end
@@ -289,4 +289,27 @@ end
             err_str
         );
     }
+}
+
+#[test]
+fn importing_a_private_symbol_is_an_error_and_wildcards_skip_it() {
+    let util = "pub cell shown(n: Int) -> Int\n  return n\nend\n\ncell hidden(n: Int) -> Int\n  return n\nend\n";
+    let resolver = |name: &str| -> Option<String> {
+        if name == "util" {
+            Some(util.to_string())
+        } else {
+            None
+        }
+    };
+    let named = "import util: hidden\n\ncell main() -> Int\n  return hidden(1)\nend\n";
+    let err = lumen_compiler::compile_raw_with_imports(named, &resolver)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("private") || err.contains("PrivateImport"),
+        "{err}"
+    );
+
+    let ok = "import util: shown\n\ncell main() -> Int\n  return shown(1)\nend\n";
+    lumen_compiler::compile_raw_with_imports(ok, &resolver).expect("pub symbol imports");
 }

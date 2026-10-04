@@ -285,7 +285,7 @@ Providers implement `capabilities()` method to advertise supported features. The
 
 **Compose vs Pipe**: `|>` pipes a VALUE through functions (eager, left to right): `5 |> double() |> add(3)` immediately evaluates. `~>` COMPOSES functions into a new function (lazy, creates closure): `double ~> add_one` returns a callable that applies `double` then `add_one` when invoked.
 
-**Defer execution order**: Multiple `defer` blocks in a scope execute in LIFO (reverse) order when the scope exits. The last `defer` registered runs first.
+**Defer execution order**: Multiple `defer` blocks in a scope execute in LIFO (reverse) order when the cell returns. The last `defer` registered runs first.
 
 **Let-destructuring**: Fully implemented. `let (a, b) = tuple_expr` — tuple destructuring. `let Point(x:, y:) = record_expr` — record destructuring.
 
@@ -376,7 +376,7 @@ The CLI includes supply-chain security features for the package manager:
 - **Processes** (memory, machine, pipeline, etc.) are constructor-backed runtime objects with typed methods
 - **Grants** provide capability-scoped tool access with policy constraints
 - **Extern** declarations for FFI: `extern cell malloc(size: Int) -> addr[Byte]`
-- **Defer** for scope-exit cleanup: `defer ... end` (LIFO execution order)
+- **Defer** for cell-exit cleanup: `defer ... end` (LIFO execution order)
 - **Yield** for generator cells: `cell gen() -> yield Int` with `yield value`
 - Source format supports markdown (`.lm.md`) with fenced `lumen` blocks, raw (`.lm`) files, and markdown-native (`.lumen`) files
 
@@ -385,7 +385,7 @@ The CLI includes supply-chain security features for the package manager:
 - **Compose operator** `~>`: `parse ~> validate ~> transform` — creates a new composed function (lazy, creates closure)
 - **`when` expression**: multi-branch conditional — `when score >= 90 -> "A" ... _ -> "F" end`
 - **`comptime` expression**: compile-time constant evaluation — `comptime build_lookup(256) end`
-- **`defer` statement**: scope-exit cleanup — `defer close(handle) end` (executes in LIFO order)
+- **`defer` statement**: cell-exit cleanup — `defer close(handle) end` (executes in LIFO order)
 - **`extern` declaration**: FFI — `extern cell malloc(size: Int) -> addr[Byte]`
 - **`yield` statement**: generator/lazy iterator — `yield value` in cells returning `yield T`
 - **String interpolation**: `"Hello, {name}!"` — embed expressions in strings

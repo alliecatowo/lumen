@@ -20,19 +20,19 @@ bind effect json to "json_parse"
 bind effect json to "json_stringify"
 
 # Parse JSON string to value
-cell parse(json_str: string) / {json}
+pub cell parse(json_str: string) / {json}
   let result = json_parse({input: json_str})
   return result
 end
 
 # Stringify value to JSON
-cell stringify(value) -> string / {json}
+pub cell stringify(value) -> string / {json}
   let result = json_stringify({value: value})
   return result
 end
 
 # Pretty print JSON with indentation
-cell stringify_pretty(value, indent: int) -> string / {json}
+pub cell stringify_pretty(value, indent: int) -> string / {json}
   let result = json_stringify({
     value: value,
     indent: indent
@@ -41,7 +41,7 @@ cell stringify_pretty(value, indent: int) -> string / {json}
 end
 
 # Get a value at a JSON path (dot-separated)
-cell get_path(obj, path: string)
+pub cell get_path(obj, path: string)
   let parts = split(path, ".")
   let current = obj
 
@@ -57,14 +57,14 @@ cell get_path(obj, path: string)
 end
 
 # Set a value at a JSON path (simple one-level only)
-cell set_path(obj, key: string, value)
+pub cell set_path(obj, key: string, value)
   let result = obj
   result[key] = value
   return result
 end
 
 # Merge two JSON objects (shallow merge)
-cell merge(obj1, obj2)
+pub cell merge(obj1, obj2)
   let result = obj1
   let keys2 = keys(obj2)
 
@@ -76,7 +76,7 @@ cell merge(obj1, obj2)
 end
 
 # Deep merge two JSON objects
-cell merge_deep(obj1, obj2)
+pub cell merge_deep(obj1, obj2)
   let result = obj1
   let keys2 = keys(obj2)
 
@@ -100,7 +100,7 @@ cell merge_deep(obj1, obj2)
 end
 
 # Pick specific keys from an object
-cell pick(obj, keys_to_pick: list[string])
+pub cell pick(obj, keys_to_pick: list[string])
   let result = {}
 
   for key in keys_to_pick
@@ -113,7 +113,7 @@ cell pick(obj, keys_to_pick: list[string])
 end
 
 # Omit specific keys from an object
-cell omit(obj, keys_to_omit: list[string])
+pub cell omit(obj, keys_to_omit: list[string])
   let result = {}
   let all_keys = keys(obj)
 
@@ -133,17 +133,17 @@ cell omit(obj, keys_to_omit: list[string])
 end
 
 # Check if object has a key
-cell has_key(obj, key: string) -> bool
+pub cell has_key(obj, key: string) -> bool
   return contains(obj, key)
 end
 
 # Get all values from an object
-cell get_values(obj)
+pub cell get_values(obj)
   return values(obj)
 end
 
 # Get all keys from an object
-cell get_keys(obj) -> list[string]
+pub cell get_keys(obj) -> list[string]
   return keys(obj)
 end
 ```

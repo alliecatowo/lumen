@@ -239,7 +239,7 @@ continue @outer
 
 ## defer
 
-`defer` schedules statements to run when the current scope exits. This is useful for cleanup tasks like closing handles or releasing resources.
+`defer` schedules statements to run when the **enclosing cell returns**. This is useful for cleanup tasks like closing handles or releasing resources.
 
 ```lumen
 cell run() -> Int
@@ -252,7 +252,7 @@ cell run() -> Int
 end
 ```
 
-Multiple `defer` blocks in the same scope execute in **LIFO (reverse) order** — the last `defer` registered runs first:
+Multiple `defer` blocks in the same cell execute in **LIFO (reverse) order** — the last `defer` registered runs first:
 
 ```lumen
 cell example() -> Null
@@ -268,7 +268,7 @@ end
 # Output: body → second registered, runs first → first registered, runs last
 ```
 
-`defer` runs regardless of how the scope exits (normal return, early return, or error):
+`defer` runs on every `return` (explicit or implicit) that comes after the `defer` statement has executed:
 
 ```lumen
 cell read_data(path: String) -> String
@@ -298,6 +298,14 @@ cell counting(n: Int) -> yield Int
   end
 end
 ```
+
+Semantics worth knowing:
+
+- Defers are cell-scoped, not block-scoped: a `defer` inside an `if`, `for` or `while` body runs when the
+  *cell* returns, not when that block ends.
+- A `defer` only runs if control actually reached it. One inside a branch that was not taken is skipped.
+- A `defer` inside a loop registers once; it runs once at return even if the statement executed many times.
+- `break`/`continue` do not run defers, and a runtime error aborts without running them.
 
 Consumers iterate over yielded values:
 

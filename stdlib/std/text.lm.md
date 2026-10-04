@@ -4,7 +4,7 @@ string manipulation utilities.
 
 ```lumen
 # Pad a string on the left with a character
-cell pad_left(s: string, width: int, pad_char: string) -> string
+pub cell pad_left(s: string, width: int, pad_char: string) -> string
   let current_len = len(s)
   if current_len >= width
     return s
@@ -21,7 +21,7 @@ cell pad_left(s: string, width: int, pad_char: string) -> string
 end
 
 # Pad a string on the right with a character
-cell pad_right(s: string, width: int, pad_char: string) -> string
+pub cell pad_right(s: string, width: int, pad_char: string) -> string
   let current_len = len(s)
   if current_len >= width
     return s
@@ -38,7 +38,7 @@ cell pad_right(s: string, width: int, pad_char: string) -> string
 end
 
 # Truncate a string to a maximum length
-cell truncate(s: string, max_len: int) -> string
+pub cell truncate(s: string, max_len: int) -> string
   if len(s) <= max_len
     return s
   end
@@ -49,7 +49,7 @@ cell truncate(s: string, max_len: int) -> string
 end
 
 # Repeat a string n times
-cell repeat(s: string, count: int) -> string
+pub cell repeat(s: string, count: int) -> string
   if count <= 0
     return ""
   end
@@ -63,12 +63,12 @@ cell repeat(s: string, count: int) -> string
 end
 
 # Check if a string contains a substring (wraps builtin)
-cell contains_str(haystack: string, needle: string) -> Bool
+pub cell contains_str(haystack: string, needle: string) -> Bool
   return contains(haystack, needle)
 end
 
 # Check if a string starts with a prefix
-cell starts_with(s: string, prefix: string) -> Bool
+pub cell starts_with(s: string, prefix: string) -> Bool
   let s_len = len(s)
   let prefix_len = len(prefix)
   if prefix_len > s_len
@@ -79,7 +79,7 @@ cell starts_with(s: string, prefix: string) -> Bool
 end
 
 # Check if a string ends with a suffix
-cell ends_with(s: string, suffix: string) -> Bool
+pub cell ends_with(s: string, suffix: string) -> Bool
   let s_len = len(s)
   let suffix_len = len(suffix)
   if suffix_len > s_len
@@ -91,7 +91,7 @@ cell ends_with(s: string, suffix: string) -> Bool
 end
 
 # Capitalize first letter
-cell capitalize(s: string) -> string
+pub cell capitalize(s: string) -> string
   if len(s) == 0
     return s
   end
@@ -101,7 +101,7 @@ cell capitalize(s: string) -> string
 end
 
 # Title case (capitalize each word)
-cell title_case(s: string) -> string
+pub cell title_case(s: string) -> string
   let words = split(s, " ")
   let mut result = []
   for word in words
@@ -111,7 +111,7 @@ cell title_case(s: string) -> string
 end
 
 # Count words in a string
-cell word_count(s: string) -> int
+pub cell word_count(s: string) -> int
   let trimmed = trim(s)
   if len(trimmed) == 0
     return 0
@@ -121,7 +121,7 @@ cell word_count(s: string) -> int
 end
 
 # Reverse a string
-cell reverse(s: string) -> string
+pub cell reverse(s: string) -> string
   let n = len(s)
   if n <= 1
     return s
@@ -136,14 +136,14 @@ cell reverse(s: string) -> string
 end
 
 # Check if string is palindrome
-cell is_palindrome(s: string) -> Bool
+pub cell is_palindrome(s: string) -> Bool
   let cleaned = lower(trim(s))
   let reversed = reverse(cleaned)
   return cleaned == reversed
 end
 
 # Remove prefix if present
-cell remove_prefix(s: string, prefix: string) -> string
+pub cell remove_prefix(s: string, prefix: string) -> string
   if starts_with(s, prefix)
     let prefix_len = len(prefix)
     return slice(s, prefix_len, len(s))
@@ -152,7 +152,7 @@ cell remove_prefix(s: string, prefix: string) -> string
 end
 
 # Remove suffix if present
-cell remove_suffix(s: string, suffix: string) -> string
+pub cell remove_suffix(s: string, suffix: string) -> string
   if ends_with(s, suffix)
     let s_len = len(s)
     let suffix_len = len(suffix)
@@ -162,7 +162,7 @@ cell remove_suffix(s: string, suffix: string) -> string
 end
 
 # Count occurrences of a substring
-cell count_occurrences(s: string, substring: string) -> int
+pub cell count_occurrences(s: string, substring: string) -> int
   let s_len = len(s)
   let sub_len = len(substring)
   if sub_len == 0 or sub_len > s_len

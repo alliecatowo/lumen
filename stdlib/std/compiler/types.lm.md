@@ -13,7 +13,7 @@ import std.compiler.span: Span
 # After type checking, every expression is assigned a resolved Type.
 # These mirror the Rust `Type` enum from typecheck.rs.
 
-enum Type
+pub enum Type
   # Primitive types
   TString
   TInt
@@ -47,21 +47,21 @@ enum Type
 end
 
 # Payload records for parameterized Type variants
-record TypeListPayload(element: Type)
-record TypeMapPayload(key: Type, value: Type)
-record TypeSetPayload(element: Type)
-record TypeTuplePayload(elements: list[Type])
-record TypeNamePayload(name: String)
-record TypeResultPayload(ok: Type, err: Type)
-record TypeUnionPayload(members: list[Type])
-record TypeFnPayload(params: list[Type], ret: Type)
-record TypeRefPayload(name: String, args: list[Type])
+pub record TypeListPayload(element: Type)
+pub record TypeMapPayload(key: Type, value: Type)
+pub record TypeSetPayload(element: Type)
+pub record TypeTuplePayload(elements: list[Type])
+pub record TypeNamePayload(name: String)
+pub record TypeResultPayload(ok: Type, err: Type)
+pub record TypeUnionPayload(members: list[Type])
+pub record TypeFnPayload(params: list[Type], ret: Type)
+pub record TypeRefPayload(name: String, args: list[Type])
 
 # ══════════════════════════════════════════════════════════════════
 # Type errors
 # ══════════════════════════════════════════════════════════════════
 
-enum TypeError
+pub enum TypeError
   # Type mismatch: expected vs actual at a line
   Mismatch(payload: MismatchError)
   # Undefined variable reference
@@ -84,56 +84,56 @@ enum TypeError
   MustUseIgnored(payload: MustUseIgnoredError)
 end
 
-record MismatchError(
+pub record MismatchError(
   expected: String,
   actual: String,
   line: Int
 )
 
-record UndefinedVarError(
+pub record UndefinedVarError(
   name: String,
   line: Int
 )
 
-record NotCallableError(
+pub record NotCallableError(
   line: Int
 )
 
-record ArgCountError(
+pub record ArgCountError(
   expected: Int,
   actual: Int,
   line: Int
 )
 
-record UnknownFieldError(
+pub record UnknownFieldError(
   field: String,
   ty: String,
   line: Int,
   suggestions: list[String]
 )
 
-record UndefinedTypeError(
+pub record UndefinedTypeError(
   name: String,
   line: Int
 )
 
-record MissingReturnError(
+pub record MissingReturnError(
   name: String,
   line: Int
 )
 
-record ImmutableAssignError(
+pub record ImmutableAssignError(
   name: String,
   line: Int
 )
 
-record IncompleteMatchError(
+pub record IncompleteMatchError(
   enum_name: String,
   missing: list[String],
   line: Int
 )
 
-record MustUseIgnoredError(
+pub record MustUseIgnoredError(
   name: String,
   line: Int
 )
@@ -143,7 +143,7 @@ record MustUseIgnoredError(
 # ══════════════════════════════════════════════════════════════════
 
 # Format a Type as a human-readable string.
-cell format_type(ty: Type) -> String
+pub cell format_type(ty: Type) -> String
   return match ty
     case TString -> "String"
     case TInt -> "Int"
@@ -176,7 +176,7 @@ cell format_type(ty: Type) -> String
 end
 
 # Format a TypeError as a human-readable string.
-cell format_type_error(err: TypeError) -> String
+pub cell format_type_error(err: TypeError) -> String
   return match err
     case Mismatch(payload) ->
       "type mismatch at line {payload.line}: expected {payload.expected}, got {payload.actual}"

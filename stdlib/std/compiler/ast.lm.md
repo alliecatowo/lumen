@@ -10,13 +10,13 @@ import std.compiler.span: Span
 # Program — root AST node
 # ══════════════════════════════════════════════════════════════════
 
-record Program(
+pub record Program(
   directives: list[Directive],
   items: list[Item],
   span: Span
 )
 
-record Directive(
+pub record Directive(
   name: String,
   value: String?,
   span: Span
@@ -26,7 +26,7 @@ record Directive(
 # Type expressions
 # ══════════════════════════════════════════════════════════════════
 
-enum TypeExpr
+pub enum TypeExpr
   # Named type: String, Int, user-defined
   Named(payload: NamedTypeExpr)
   # list[T]
@@ -49,22 +49,22 @@ enum TypeExpr
   GenericType(payload: GenericTypeExpr)
 end
 
-record NamedTypeExpr(name: String, span: Span)
-record ListTypeExpr(element: TypeExpr, span: Span)
-record MapTypeExpr(key: TypeExpr, value: TypeExpr, span: Span)
-record ResultTypeExpr(ok: TypeExpr, err: TypeExpr, span: Span)
-record UnionTypeExpr(members: list[TypeExpr], span: Span)
-record NullTypeExpr(span: Span)
-record TupleTypeExpr(elements: list[TypeExpr], span: Span)
-record SetTypeExpr(element: TypeExpr, span: Span)
-record FnTypeExpr(params: list[TypeExpr], ret: TypeExpr, effects: list[String], span: Span)
-record GenericTypeExpr(name: String, args: list[TypeExpr], span: Span)
+pub record NamedTypeExpr(name: String, span: Span)
+pub record ListTypeExpr(element: TypeExpr, span: Span)
+pub record MapTypeExpr(key: TypeExpr, value: TypeExpr, span: Span)
+pub record ResultTypeExpr(ok: TypeExpr, err: TypeExpr, span: Span)
+pub record UnionTypeExpr(members: list[TypeExpr], span: Span)
+pub record NullTypeExpr(span: Span)
+pub record TupleTypeExpr(elements: list[TypeExpr], span: Span)
+pub record SetTypeExpr(element: TypeExpr, span: Span)
+pub record FnTypeExpr(params: list[TypeExpr], ret: TypeExpr, effects: list[String], span: Span)
+pub record GenericTypeExpr(name: String, args: list[TypeExpr], span: Span)
 
 # ══════════════════════════════════════════════════════════════════
 # Generic parameters
 # ══════════════════════════════════════════════════════════════════
 
-record GenericParam(
+pub record GenericParam(
   name: String,
   bounds: list[String],
   span: Span
@@ -74,7 +74,7 @@ record GenericParam(
 # Operators
 # ══════════════════════════════════════════════════════════════════
 
-enum BinOp
+pub enum BinOp
   Add         # +
   Sub         # -
   Mul         # *
@@ -102,13 +102,13 @@ enum BinOp
   Spaceship   # <=>
 end
 
-enum UnaryOp
+pub enum UnaryOp
   Neg     # -
   OpNot   # not
   BitNot  # ~
 end
 
-enum CompoundOp
+pub enum CompoundOp
   AddAssign       # +=
   SubAssign       # -=
   MulAssign       # *=
@@ -125,7 +125,7 @@ end
 # Item definitions (top-level declarations)
 # ══════════════════════════════════════════════════════════════════
 
-enum Item
+pub enum Item
   RecordItem(payload: RecordDef)
   EnumItem(payload: EnumDef)
   CellItem(payload: CellDef)
@@ -147,7 +147,7 @@ end
 
 # ── Records ──────────────────────────────────────────────────────
 
-record RecordDef(
+pub record RecordDef(
   name: String,
   generic_params: list[GenericParam],
   fields: list[FieldDef],
@@ -156,7 +156,7 @@ record RecordDef(
   doc: String?
 )
 
-record FieldDef(
+pub record FieldDef(
   name: String,
   ty: TypeExpr,
   default_value: Expr?,
@@ -166,7 +166,7 @@ record FieldDef(
 
 # ── Enums ────────────────────────────────────────────────────────
 
-record EnumDef(
+pub record EnumDef(
   name: String,
   generic_params: list[GenericParam],
   variants: list[EnumVariant],
@@ -176,7 +176,7 @@ record EnumDef(
   doc: String?
 )
 
-record EnumVariant(
+pub record EnumVariant(
   name: String,
   payload: TypeExpr?,
   span: Span
@@ -184,7 +184,7 @@ record EnumVariant(
 
 # ── Cells (functions) ────────────────────────────────────────────
 
-record CellDef(
+pub record CellDef(
   name: String,
   generic_params: list[GenericParam],
   params: list[Param],
@@ -200,7 +200,7 @@ record CellDef(
   doc: String?
 )
 
-record Param(
+pub record Param(
   name: String,
   ty: TypeExpr,
   default_value: Expr?,
@@ -210,7 +210,7 @@ record Param(
 
 # ── Agents ───────────────────────────────────────────────────────
 
-record AgentDecl(
+pub record AgentDecl(
   name: String,
   cells: list[CellDef],
   grants: list[GrantDecl],
@@ -219,7 +219,7 @@ record AgentDecl(
 
 # ── Processes ────────────────────────────────────────────────────
 
-record ProcessDecl(
+pub record ProcessDecl(
   kind: String,
   name: String,
   configs: map[String, Expr],
@@ -231,7 +231,7 @@ record ProcessDecl(
   span: Span
 )
 
-record MachineStateDecl(
+pub record MachineStateDecl(
   name: String,
   params: list[Param],
   terminal: Bool,
@@ -243,26 +243,26 @@ record MachineStateDecl(
 
 # ── Effects ──────────────────────────────────────────────────────
 
-record EffectDecl(
+pub record EffectDecl(
   name: String,
   operations: list[CellDef],
   span: Span
 )
 
-record EffectBindDecl(
+pub record EffectBindDecl(
   effect_path: String,
   tool_alias: String,
   span: Span
 )
 
-record HandlerDecl(
+pub record HandlerDecl(
   name: String,
   handles: list[CellDef],
   span: Span,
   doc: String?
 )
 
-record EffectHandler(
+pub record EffectHandler(
   effect_name: String,
   operation: String,
   params: list[Param],
@@ -272,7 +272,7 @@ record EffectHandler(
 
 # ── Addons ───────────────────────────────────────────────────────
 
-record AddonDecl(
+pub record AddonDecl(
   kind: String,
   name: String?,
   span: Span
@@ -280,20 +280,20 @@ record AddonDecl(
 
 # ── Tools and Grants ─────────────────────────────────────────────
 
-record UseToolDecl(
+pub record UseToolDecl(
   tool_path: String,
   alias: String,
   mcp_url: String?,
   span: Span
 )
 
-record GrantDecl(
+pub record GrantDecl(
   tool_alias: String,
   constraints: list[GrantConstraint],
   span: Span
 )
 
-record GrantConstraint(
+pub record GrantConstraint(
   key: String,
   value: Expr,
   span: Span
@@ -301,7 +301,7 @@ record GrantConstraint(
 
 # ── Type aliases, traits, impls ──────────────────────────────────
 
-record TypeAliasDef(
+pub record TypeAliasDef(
   name: String,
   generic_params: list[GenericParam],
   type_expr: TypeExpr,
@@ -310,7 +310,7 @@ record TypeAliasDef(
   doc: String?
 )
 
-record TraitDef(
+pub record TraitDef(
   name: String,
   parent_traits: list[String],
   methods: list[CellDef],
@@ -318,7 +318,7 @@ record TraitDef(
   span: Span
 )
 
-record ImplDef(
+pub record ImplDef(
   trait_name: String,
   generic_params: list[GenericParam],
   target_type: String,
@@ -328,20 +328,20 @@ record ImplDef(
 
 # ── Imports ──────────────────────────────────────────────────────
 
-enum ImportList
+pub enum ImportList
   ImportNames(payload: ImportNamesVal)
   ImportWildcard
 end
 
-record ImportNamesVal(names: list[ImportName])
+pub record ImportNamesVal(names: list[ImportName])
 
-record ImportName(
+pub record ImportName(
   name: String,
   alias: String?,
   span: Span
 )
 
-record ImportDecl(
+pub record ImportDecl(
   path: list[String],
   names: ImportList,
   is_pub: Bool,
@@ -350,14 +350,14 @@ record ImportDecl(
 
 # ── Constants and Macros ─────────────────────────────────────────
 
-record ConstDeclDef(
+pub record ConstDeclDef(
   name: String,
   type_ann: TypeExpr?,
   value: Expr,
   span: Span
 )
 
-record MacroDeclDef(
+pub record MacroDeclDef(
   name: String,
   params: list[String],
   body: list[Stmt],
@@ -368,7 +368,7 @@ record MacroDeclDef(
 # Statements
 # ══════════════════════════════════════════════════════════════════
 
-enum Stmt
+pub enum Stmt
   LetStmt(payload: LetStmtDef)
   IfStmt(payload: IfStmtDef)
   ForStmt(payload: ForStmtDef)
@@ -390,7 +390,7 @@ enum Stmt
   LocalCell(payload: CellDef)
 end
 
-record LetStmtDef(
+pub record LetStmtDef(
   name: String,
   mutable: Bool,
   pattern: Pattern?,
@@ -399,14 +399,14 @@ record LetStmtDef(
   span: Span
 )
 
-record IfStmtDef(
+pub record IfStmtDef(
   condition: Expr,
   then_body: list[Stmt],
   else_body: list[Stmt]?,
   span: Span
 )
 
-record ForStmtDef(
+pub record ForStmtDef(
   label: String?,
   var: String,
   pattern: Pattern?,
@@ -416,81 +416,81 @@ record ForStmtDef(
   span: Span
 )
 
-record MatchStmtDef(
+pub record MatchStmtDef(
   subject: Expr,
   arms: list[MatchArm],
   span: Span
 )
 
-record MatchArm(
+pub record MatchArm(
   pattern: Pattern,
   body: list[Stmt],
   span: Span
 )
 
-record ReturnStmtDef(
+pub record ReturnStmtDef(
   value: Expr,
   span: Span
 )
 
-record HaltStmtDef(
+pub record HaltStmtDef(
   message: Expr,
   span: Span
 )
 
-record ExprStmtDef(
+pub record ExprStmtDef(
   expr: Expr,
   span: Span
 )
 
-record AssignStmtDef(
+pub record AssignStmtDef(
   target: String,
   value: Expr,
   span: Span
 )
 
-record WhileStmtDef(
+pub record WhileStmtDef(
   label: String?,
   condition: Expr,
   body: list[Stmt],
   span: Span
 )
 
-record LoopStmtDef(
+pub record LoopStmtDef(
   label: String?,
   body: list[Stmt],
   span: Span
 )
 
-record BreakStmtDef(
+pub record BreakStmtDef(
   label: String?,
   value: Expr?,
   span: Span
 )
 
-record ContinueStmtDef(
+pub record ContinueStmtDef(
   label: String?,
   span: Span
 )
 
-record EmitStmtDef(
+pub record EmitStmtDef(
   value: Expr,
   span: Span
 )
 
-record CompoundAssignStmtDef(
+pub record CompoundAssignStmtDef(
   target: String,
   op: CompoundOp,
   value: Expr,
   span: Span
 )
 
-record DeferStmtDef(
+pub record DeferStmtDef(
   body: list[Stmt],
   span: Span
 )
 
-record YieldStmtDef(
+pub record YieldStmtDef(
   value: Expr,
   span: Span
 )
@@ -499,7 +499,7 @@ record YieldStmtDef(
 # Patterns
 # ══════════════════════════════════════════════════════════════════
 
-enum Pattern
+pub enum Pattern
   # Literal: 200, "hello", true
   LiteralPat(payload: LiteralPatDef)
   # Variant: ok(value), err(e)
@@ -524,42 +524,42 @@ enum Pattern
   RangePat(payload: RangePatDef)
 end
 
-record LiteralPatDef(expr: Expr)
-record VariantPatDef(name: String, inner: Pattern?, span: Span)
-record WildcardPatDef(span: Span)
-record IdentPatDef(name: String, span: Span)
-record GuardPatDef(inner: Pattern, condition: Expr, span: Span)
-record OrPatDef(patterns: list[Pattern], span: Span)
-record ListDestructureDef(elements: list[Pattern], rest: String?, span: Span)
-record TupleDestructureDef(elements: list[Pattern], span: Span)
-record RecordDestructureField(name: String, pattern: Pattern?)
-record RecordDestructureDef(type_name: String, fields: list[RecordDestructureField], open: Bool, span: Span)
-record TypeCheckPatDef(name: String, type_expr: TypeExpr, span: Span)
-record RangePatDef(start: Expr, end_val: Expr, inclusive: Bool, span: Span)
+pub record LiteralPatDef(expr: Expr)
+pub record VariantPatDef(name: String, inner: Pattern?, span: Span)
+pub record WildcardPatDef(span: Span)
+pub record IdentPatDef(name: String, span: Span)
+pub record GuardPatDef(inner: Pattern, condition: Expr, span: Span)
+pub record OrPatDef(patterns: list[Pattern], span: Span)
+pub record ListDestructureDef(elements: list[Pattern], rest: String?, span: Span)
+pub record TupleDestructureDef(elements: list[Pattern], span: Span)
+pub record RecordDestructureField(name: String, pattern: Pattern?)
+pub record RecordDestructureDef(type_name: String, fields: list[RecordDestructureField], open: Bool, span: Span)
+pub record TypeCheckPatDef(name: String, type_expr: TypeExpr, span: Span)
+pub record RangePatDef(start: Expr, end_val: Expr, inclusive: Bool, span: Span)
 
 # ══════════════════════════════════════════════════════════════════
 # Expressions
 # ══════════════════════════════════════════════════════════════════
 
 # String interpolation segment
-enum StringSegment
+pub enum StringSegment
   LiteralSeg(payload: StringLitVal)
   InterpSeg(payload: InterpExprVal)
   FormattedInterpSeg(payload: FormattedInterpVal)
 end
 
-record StringLitVal(text: String)
-record InterpExprVal(expr: Expr)
-record FormattedInterpVal(expr: Expr, spec: FormatSpec)
+pub record StringLitVal(text: String)
+pub record InterpExprVal(expr: Expr)
+pub record FormattedInterpVal(expr: Expr, spec: FormatSpec)
 
 # Format spec components
-enum FormatAlign
+pub enum FormatAlign
   AlignLeft
   AlignRight
   AlignCenter
 end
 
-enum FormatType
+pub enum FormatType
   FmtDecimal
   FmtHex
   FmtHexUpper
@@ -571,7 +571,7 @@ enum FormatType
   FmtStr
 end
 
-record FormatSpec(
+pub record FormatSpec(
   fill: String?,
   align: FormatAlign?,
   sign: String?,
@@ -584,47 +584,47 @@ record FormatSpec(
 )
 
 # Call argument kinds
-enum CallArg
+pub enum CallArg
   Positional(payload: PositionalArgDef)
   NamedArg(payload: NamedArgDef)
   RoleArg(payload: RoleArgDef)
 end
 
-record PositionalArgDef(expr: Expr)
-record NamedArgDef(name: String, expr: Expr, span: Span)
-record RoleArgDef(role: String, expr: Expr, span: Span)
+pub record PositionalArgDef(expr: Expr)
+pub record NamedArgDef(name: String, expr: Expr, span: Span)
+pub record RoleArgDef(role: String, expr: Expr, span: Span)
 
 # When-expression arm
-record WhenArm(
+pub record WhenArm(
   condition: Expr,
   body: Expr,
   span: Span
 )
 
 # Comprehension clause
-record ComprehensionClause(
+pub record ComprehensionClause(
   var: String,
   iter: Expr
 )
 
-enum ComprehensionKind
+pub enum ComprehensionKind
   ListComp
   MapComp
   SetComp
 end
 
 # Lambda body variants
-enum LambdaBody
+pub enum LambdaBody
   LambdaExpr(payload: LambdaExprBody)
   LambdaBlock(payload: LambdaBlockBody)
 end
 
-record LambdaExprBody(expr: Expr)
-record LambdaBlockBody(stmts: list[Stmt])
+pub record LambdaExprBody(expr: Expr)
+pub record LambdaBlockBody(stmts: list[Stmt])
 
 # ── The Expr enum ────────────────────────────────────────────────
 
-enum Expr
+pub enum Expr
   # Literals
   IntLitExpr(payload: IntLitExprDef)
   BigIntLitExpr(payload: BigIntLitExprDef)
@@ -711,60 +711,60 @@ end
 
 # ── Expr payload records ─────────────────────────────────────────
 
-record IntLitExprDef(value: Int, span: Span)
-record BigIntLitExprDef(value: String, span: Span)
-record FloatLitExprDef(value: Float, span: Span)
-record StringLitExprDef(value: String, span: Span)
-record StringInterpExprDef(segments: list[StringSegment], span: Span)
-record BoolLitExprDef(value: Bool, span: Span)
-record NullLitExprDef(span: Span)
-record RawStringLitExprDef(value: String, span: Span)
-record BytesLitExprDef(value: list[Int], span: Span)
+pub record IntLitExprDef(value: Int, span: Span)
+pub record BigIntLitExprDef(value: String, span: Span)
+pub record FloatLitExprDef(value: Float, span: Span)
+pub record StringLitExprDef(value: String, span: Span)
+pub record StringInterpExprDef(segments: list[StringSegment], span: Span)
+pub record BoolLitExprDef(value: Bool, span: Span)
+pub record NullLitExprDef(span: Span)
+pub record RawStringLitExprDef(value: String, span: Span)
+pub record BytesLitExprDef(value: list[Int], span: Span)
 
-record IdentExprDef(name: String, span: Span)
+pub record IdentExprDef(name: String, span: Span)
 
-record ListLitExprDef(elements: list[Expr], span: Span)
-record MapLitExprDef(entries: list[MapEntry], span: Span)
-record MapEntry(key: Expr, value: Expr)
-record RecordLitExprDef(name: String, fields: list[RecordFieldInit], span: Span)
-record RecordFieldInit(name: String, value: Expr)
-record TupleLitExprDef(elements: list[Expr], span: Span)
-record SetLitExprDef(elements: list[Expr], span: Span)
+pub record ListLitExprDef(elements: list[Expr], span: Span)
+pub record MapLitExprDef(entries: list[MapEntry], span: Span)
+pub record MapEntry(key: Expr, value: Expr)
+pub record RecordLitExprDef(name: String, fields: list[RecordFieldInit], span: Span)
+pub record RecordFieldInit(name: String, value: Expr)
+pub record TupleLitExprDef(elements: list[Expr], span: Span)
+pub record SetLitExprDef(elements: list[Expr], span: Span)
 
-record BinOpExprDef(left: Expr, op: BinOp, right: Expr, span: Span)
-record UnaryOpExprDef(op: UnaryOp, operand: Expr, span: Span)
+pub record BinOpExprDef(left: Expr, op: BinOp, right: Expr, span: Span)
+pub record UnaryOpExprDef(op: UnaryOp, operand: Expr, span: Span)
 
-record CallExprDef(callee: Expr, args: list[CallArg], span: Span)
-record ToolCallExprDef(callee: Expr, args: list[CallArg], span: Span)
+pub record CallExprDef(callee: Expr, args: list[CallArg], span: Span)
+pub record ToolCallExprDef(callee: Expr, args: list[CallArg], span: Span)
 
-record DotAccessExprDef(object: Expr, field: String, span: Span)
-record IndexAccessExprDef(object: Expr, index: Expr, span: Span)
+pub record DotAccessExprDef(object: Expr, field: String, span: Span)
+pub record IndexAccessExprDef(object: Expr, index: Expr, span: Span)
 
-record RoleBlockExprDef(role: String, body: Expr, span: Span)
-record ExpectSchemaExprDef(expr: Expr, schema_name: String, span: Span)
+pub record RoleBlockExprDef(role: String, body: Expr, span: Span)
+pub record ExpectSchemaExprDef(expr: Expr, schema_name: String, span: Span)
 
-record LambdaExprDef(params: list[Param], return_type: TypeExpr?, body: LambdaBody, span: Span)
+pub record LambdaExprDef(params: list[Param], return_type: TypeExpr?, body: LambdaBody, span: Span)
 
-record RangeExprDef(start: Expr?, end_val: Expr?, inclusive: Bool, step: Expr?, span: Span)
+pub record RangeExprDef(start: Expr?, end_val: Expr?, inclusive: Bool, step: Expr?, span: Span)
 
-record TryExprDef(expr: Expr, span: Span)
-record TryElseExprDef(expr: Expr, error_binding: String, handler: Expr, span: Span)
+pub record TryExprDef(expr: Expr, span: Span)
+pub record TryElseExprDef(expr: Expr, error_binding: String, handler: Expr, span: Span)
 
-record NullCoalesceExprDef(lhs: Expr, rhs: Expr, span: Span)
-record NullSafeAccessExprDef(object: Expr, field: String, span: Span)
-record NullSafeIndexExprDef(object: Expr, index: Expr, span: Span)
-record NullAssertExprDef(expr: Expr, span: Span)
+pub record NullCoalesceExprDef(lhs: Expr, rhs: Expr, span: Span)
+pub record NullSafeAccessExprDef(object: Expr, field: String, span: Span)
+pub record NullSafeIndexExprDef(object: Expr, index: Expr, span: Span)
+pub record NullAssertExprDef(expr: Expr, span: Span)
 
-record SpreadExprDef(expr: Expr, span: Span)
+pub record SpreadExprDef(expr: Expr, span: Span)
 
-record IfExprDef(cond: Expr, then_val: Expr, else_val: Expr, span: Span)
-record MatchExprDef(subject: Expr, arms: list[MatchArm], span: Span)
-record WhenExprDef(arms: list[WhenArm], else_body: Expr?, span: Span)
-record BlockExprDef(stmts: list[Stmt], span: Span)
+pub record IfExprDef(cond: Expr, then_val: Expr, else_val: Expr, span: Span)
+pub record MatchExprDef(subject: Expr, arms: list[MatchArm], span: Span)
+pub record WhenExprDef(arms: list[WhenArm], else_body: Expr?, span: Span)
+pub record BlockExprDef(stmts: list[Stmt], span: Span)
 
-record AwaitExprDef(expr: Expr, span: Span)
+pub record AwaitExprDef(expr: Expr, span: Span)
 
-record ComprehensionExprDef(
+pub record ComprehensionExprDef(
   body: Expr,
   var: String,
   iter: Expr,
@@ -774,14 +774,14 @@ record ComprehensionExprDef(
   span: Span
 )
 
-record PipeExprDef(left: Expr, right: Expr, span: Span)
+pub record PipeExprDef(left: Expr, right: Expr, span: Span)
 
-record IsTypeExprDef(expr: Expr, type_name: String, span: Span)
-record TypeCastExprDef(expr: Expr, target_type: String, span: Span)
+pub record IsTypeExprDef(expr: Expr, type_name: String, span: Span)
+pub record TypeCastExprDef(expr: Expr, target_type: String, span: Span)
 
-record ComptimeExprDef(expr: Expr, span: Span)
+pub record ComptimeExprDef(expr: Expr, span: Span)
 
-record PerformExprDef(effect_name: String, operation: String, args: list[Expr], span: Span)
-record HandleExprDef(body: list[Stmt], handlers: list[EffectHandler], span: Span)
-record ResumeExprDef(value: Expr, span: Span)
+pub record PerformExprDef(effect_name: String, operation: String, args: list[Expr], span: Span)
+pub record HandleExprDef(body: list[Stmt], handlers: list[EffectHandler], span: Span)
+pub record ResumeExprDef(value: Expr, span: Span)
 ```

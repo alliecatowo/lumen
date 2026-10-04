@@ -455,10 +455,14 @@ fn compile_with_imports_internal(
                         ImportList::Wildcard => {
                             // Import all top-level definitions
                             for (name, info) in imported_symbols.cells {
-                                base_symbols.import_cell(name, info);
+                                if info.is_pub {
+                                    base_symbols.import_cell(name, info);
+                                }
                             }
                             for (name, info) in imported_symbols.types {
-                                base_symbols.import_type(name, info);
+                                if info.is_public() {
+                                    base_symbols.import_type(name, info);
+                                }
                             }
                             for (name, type_expr) in imported_symbols.type_aliases {
                                 base_symbols.import_type_alias(name, type_expr);
@@ -471,6 +475,28 @@ fn compile_with_imports_internal(
 
                                 // Try to find the symbol in cells, types, or type aliases
                                 let mut found = false;
+
+                                let mut private = false;
+                                if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
+                                    if !cell_info.is_pub {
+                                        private = true;
+                                    }
+                                }
+                                if let Some(type_info) = imported_symbols.types.get(symbol_name) {
+                                    if !type_info.is_public() {
+                                        private = true;
+                                    }
+                                }
+                                if private {
+                                    import_errors.push(
+                                        compiler::resolve::ResolveError::PrivateImport {
+                                            symbol: symbol_name.clone(),
+                                            module: module_path.clone(),
+                                            line: import_name.span.line,
+                                        },
+                                    );
+                                    continue;
+                                }
 
                                 if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
                                     base_symbols.import_cell(local_name.clone(), cell_info.clone());
@@ -715,10 +741,14 @@ fn compile_raw_with_imports_internal(
                         ImportList::Wildcard => {
                             // Import all top-level definitions
                             for (name, info) in imported_symbols.cells {
-                                base_symbols.import_cell(name, info);
+                                if info.is_pub {
+                                    base_symbols.import_cell(name, info);
+                                }
                             }
                             for (name, info) in imported_symbols.types {
-                                base_symbols.import_type(name, info);
+                                if info.is_public() {
+                                    base_symbols.import_type(name, info);
+                                }
                             }
                             for (name, type_expr) in imported_symbols.type_aliases {
                                 base_symbols.import_type_alias(name, type_expr);
@@ -731,6 +761,28 @@ fn compile_raw_with_imports_internal(
 
                                 // Try to find the symbol in cells, types, or type aliases
                                 let mut found = false;
+
+                                let mut private = false;
+                                if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
+                                    if !cell_info.is_pub {
+                                        private = true;
+                                    }
+                                }
+                                if let Some(type_info) = imported_symbols.types.get(symbol_name) {
+                                    if !type_info.is_public() {
+                                        private = true;
+                                    }
+                                }
+                                if private {
+                                    import_errors.push(
+                                        compiler::resolve::ResolveError::PrivateImport {
+                                            symbol: symbol_name.clone(),
+                                            module: module_path.clone(),
+                                            line: import_name.span.line,
+                                        },
+                                    );
+                                    continue;
+                                }
 
                                 if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
                                     base_symbols.import_cell(local_name.clone(), cell_info.clone());

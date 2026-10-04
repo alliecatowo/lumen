@@ -146,6 +146,10 @@ jobs:
           merge-multiple: true
           path: vsix
 
+      - name: Skip notice
+        if: ${{ env.VSCE_PAT == '' }}
+        run: echo "::notice::VSCE_PAT is not set; skipping the VS Code Marketplace publish (Open VSX is the working channel)"
+
       - name: Publish (skipped when VSCE_PAT is not set)
         if: ${{ env.VSCE_PAT != '' }}
         run: npx --yes @vscode/vsce@4.0.0 publish --skip-duplicate --packagePath vsix/*.vsix

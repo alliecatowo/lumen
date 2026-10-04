@@ -4,24 +4,24 @@ Mathematical constants and utility functions.
 
 ```lumen
 # Mathematical constants
-cell PI() -> float
+pub cell PI() -> float
   return 3.141592653589793
 end
 
-cell E() -> float
+pub cell E() -> float
   return 2.718281828459045
 end
 
-cell TAU() -> float
+pub cell TAU() -> float
   return 6.283185307179586
 end
 
 # Absolute value (wraps builtin)
-cell abs_int(x: int) -> int
+pub cell abs_int(x: int) -> int
   return abs(x)
 end
 
-cell abs_float(x: float) -> float
+pub cell abs_float(x: float) -> float
   if x < 0.0
     return 0.0 - x
   end
@@ -29,22 +29,22 @@ cell abs_float(x: float) -> float
 end
 
 # Min/max (wraps builtins)
-cell min_int(a: int, b: int) -> int
+pub cell min_int(a: int, b: int) -> int
   return min(a, b)
 end
 
-cell max_int(a: int, b: int) -> int
+pub cell max_int(a: int, b: int) -> int
   return max(a, b)
 end
 
-cell min_float(a: float, b: float) -> float
+pub cell min_float(a: float, b: float) -> float
   if a < b
     return a
   end
   return b
 end
 
-cell max_float(a: float, b: float) -> float
+pub cell max_float(a: float, b: float) -> float
   if a > b
     return a
   end
@@ -52,7 +52,7 @@ cell max_float(a: float, b: float) -> float
 end
 
 # Clamp a value between min and max
-cell clamp_int(value: int, min_val: int, max_val: int) -> int
+pub cell clamp_int(value: int, min_val: int, max_val: int) -> int
   if value < min_val
     return min_val
   end
@@ -62,7 +62,7 @@ cell clamp_int(value: int, min_val: int, max_val: int) -> int
   return value
 end
 
-cell clamp_float(value: float, min_val: float, max_val: float) -> float
+pub cell clamp_float(value: float, min_val: float, max_val: float) -> float
   if value < min_val
     return min_val
   end
@@ -73,7 +73,7 @@ cell clamp_float(value: float, min_val: float, max_val: float) -> float
 end
 
 # Power function (integer exponent)
-cell pow(base: float, exp: int) -> float
+pub cell pow(base: float, exp: int) -> float
   if exp == 0
     return 1.0
   end
@@ -91,7 +91,7 @@ cell pow(base: float, exp: int) -> float
 end
 
 # Square root using Newton's method
-cell sqrt(x: float) -> float
+pub cell sqrt(x: float) -> float
   if x < 0.0
     return 0.0
   end
@@ -118,7 +118,7 @@ cell sqrt(x: float) -> float
 end
 
 # Natural logarithm (base e) using Taylor series approximation
-cell log(x: float) -> float
+pub cell log(x: float) -> float
   if x <= 0.0
     return 0.0
   end
@@ -154,7 +154,7 @@ cell log(x: float) -> float
 end
 
 # Floor function (round down)
-cell floor(x: float) -> int
+pub cell floor(x: float) -> int
   let i = int(x)
   if x >= 0.0 or x == float(i)
     return i
@@ -163,7 +163,7 @@ cell floor(x: float) -> int
 end
 
 # Ceiling function (round up)
-cell ceil(x: float) -> int
+pub cell ceil(x: float) -> int
   let i = int(x)
   if x <= 0.0 or x == float(i)
     return i
@@ -172,7 +172,7 @@ cell ceil(x: float) -> int
 end
 
 # Round to nearest integer
-cell round(x: float) -> int
+pub cell round(x: float) -> int
   if x >= 0.0
     return floor(x + 0.5)
   else
@@ -181,7 +181,7 @@ cell round(x: float) -> int
 end
 
 # Sign function
-cell sign_int(x: int) -> int
+pub cell sign_int(x: int) -> int
   if x > 0
     return 1
   end
@@ -191,7 +191,7 @@ cell sign_int(x: int) -> int
   return 0
 end
 
-cell sign_float(x: float) -> float
+pub cell sign_float(x: float) -> float
   if x > 0.0
     return 1.0
   end

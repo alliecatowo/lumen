@@ -11,7 +11,7 @@ import std.compiler.span: Span
 # Opcodes
 # ══════════════════════════════════════════════════════════════════
 
-enum OpCode
+pub enum OpCode
   # ── Misc ────────────────────────────────────────────────────
   Nop             # 0x00  no operation
 
@@ -113,7 +113,7 @@ end
 # Intrinsic IDs
 # ══════════════════════════════════════════════════════════════════
 
-enum IntrinsicId
+pub enum IntrinsicId
   ILength         # 0   length/len
   ICount          # 1   count
   IMatches        # 2   matches
@@ -210,7 +210,7 @@ end
 # Fields: op (8-bit), a/b/c (8-bit each).
 # ABx format: a (8-bit), bx = (b << 8) | c (16-bit).
 # Ax  format: ax = (a << 16) | (b << 8) | c (24-bit).
-record Instruction(
+pub record Instruction(
   op: OpCode,
   a: Int,
   b: Int,
@@ -218,19 +218,19 @@ record Instruction(
 )
 
 # Construct an ABC-format instruction.
-cell instr_abc(op: OpCode, a: Int, b: Int, c: Int) -> Instruction
+pub cell instr_abc(op: OpCode, a: Int, b: Int, c: Int) -> Instruction
   return Instruction(op: op, a: a, b: b, c: c)
 end
 
 # Construct an ABx-format instruction.
-cell instr_abx(op: OpCode, a: Int, bx: Int) -> Instruction
+pub cell instr_abx(op: OpCode, a: Int, bx: Int) -> Instruction
   let b = bx // 256
   let c = bx % 256
   return Instruction(op: op, a: a, b: b, c: c)
 end
 
 # Construct an Ax-format instruction (unsigned 24-bit).
-cell instr_ax(op: OpCode, ax: Int) -> Instruction
+pub cell instr_ax(op: OpCode, ax: Int) -> Instruction
   let a = (ax // 65536) % 256
   let b = (ax // 256) % 256
   let c = ax % 256
@@ -238,7 +238,7 @@ cell instr_ax(op: OpCode, ax: Int) -> Instruction
 end
 
 # Construct a signed Ax-format instruction (for jump offsets).
-cell instr_sax(op: OpCode, offset: Int) -> Instruction
+pub cell instr_sax(op: OpCode, offset: Int) -> Instruction
   # Mask to 24 bits (handles negative via two's complement)
   let bits = offset % 16777216
   if bits < 0
@@ -248,17 +248,17 @@ cell instr_sax(op: OpCode, offset: Int) -> Instruction
 end
 
 # Extract Bx (16-bit unsigned) from instruction.
-cell get_bx(instr: Instruction) -> Int
+pub cell get_bx(instr: Instruction) -> Int
   return instr.b * 256 + instr.c
 end
 
 # Extract Ax (24-bit unsigned) from instruction.
-cell get_ax(instr: Instruction) -> Int
+pub cell get_ax(instr: Instruction) -> Int
   return instr.a * 65536 + instr.b * 256 + instr.c
 end
 
 # Extract signed Ax (24-bit with sign extension) from instruction.
-cell get_sax(instr: Instruction) -> Int
+pub cell get_sax(instr: Instruction) -> Int
   let raw = get_ax(instr)
   if raw >= 8388608
     return raw - 16777216
@@ -270,7 +270,7 @@ end
 # Constants
 # ══════════════════════════════════════════════════════════════════
 
-enum Constant
+pub enum Constant
   NullConst
   BoolConst(payload: BoolConstVal)
   IntConst(payload: IntConstVal)
@@ -279,37 +279,37 @@ enum Constant
   StringConst(payload: StringConstVal)
 end
 
-record BoolConstVal(value: Bool)
-record IntConstVal(value: Int)
-record BigIntConstVal(value: String)
-record FloatConstVal(value: Float)
-record StringConstVal(value: String)
+pub record BoolConstVal(value: Bool)
+pub record IntConstVal(value: Int)
+pub record BigIntConstVal(value: String)
+pub record FloatConstVal(value: Float)
+pub record StringConstVal(value: String)
 
 # ══════════════════════════════════════════════════════════════════
 # LIR Module structure
 # ══════════════════════════════════════════════════════════════════
 
 # A type definition in LIR.
-record LirType(
+pub record LirType(
   kind: String,
   name: String,
   fields: list[LirField],
   variants: list[LirVariant]
 )
 
-record LirField(
+pub record LirField(
   name: String,
   ty: String,
   constraints: list[String]
 )
 
-record LirVariant(
+pub record LirVariant(
   name: String,
   payload: String?
 )
 
 # A compiled cell (function) in LIR.
-record LirCell(
+pub record LirCell(
   name: String,
   params: list[LirParam],
   returns: String?,
@@ -319,7 +319,7 @@ record LirCell(
   effect_handler_metas: list[LirEffectHandlerMeta]
 )
 
-record LirParam(
+pub record LirParam(
   name: String,
   ty: String,
   register: Int,
@@ -327,7 +327,7 @@ record LirParam(
 )
 
 # Effect handler metadata for handle...with...end expressions.
-record LirEffectHandlerMeta(
+pub record LirEffectHandlerMeta(
   effect_name: String,
   operation: String,
   param_count: Int,
@@ -335,7 +335,7 @@ record LirEffectHandlerMeta(
 )
 
 # Tool declaration in LIR.
-record LirTool(
+pub record LirTool(
   alias: String,
   tool_id: String,
   version: String,
@@ -343,51 +343,51 @@ record LirTool(
 )
 
 # Policy/grant in LIR.
-record LirPolicy(
+pub record LirPolicy(
   tool_alias: String,
   grants: String
 )
 
-record LirAgent(
+pub record LirAgent(
   name: String,
   methods: list[String]
 )
 
-record LirAddon(
+pub record LirAddon(
   kind: String,
   name: String?
 )
 
 # Effect definitions in LIR.
-record LirEffect(
+pub record LirEffect(
   name: String,
   operations: list[LirEffectOp]
 )
 
-record LirEffectOp(
+pub record LirEffectOp(
   name: String,
   params: list[LirParam],
   returns: String?,
   effects: list[String]
 )
 
-record LirEffectBind(
+pub record LirEffectBind(
   effect_path: String,
   tool_alias: String
 )
 
-record LirHandler(
+pub record LirHandler(
   name: String,
   handles: list[LirHandle]
 )
 
-record LirHandle(
+pub record LirHandle(
   operation: String,
   cell: String
 )
 
 # Complete LIR module — the output of compilation.
-record LirModule(
+pub record LirModule(
   version: String,
   doc_hash: String,
   strings: list[String],
@@ -403,7 +403,7 @@ record LirModule(
 )
 
 # Create a new empty LIR module.
-cell new_module(doc_hash: String) -> LirModule
+pub cell new_module(doc_hash: String) -> LirModule
   return LirModule(
     version: "1.0.0",
     doc_hash: doc_hash,

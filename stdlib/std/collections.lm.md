@@ -4,12 +4,12 @@ List and collection utility functions.
 
 ```lumen
 # Generate a range of integers (wraps builtin)
-cell range_list(start: int, end_val: int) -> list[int]
+pub cell range_list(start: int, end_val: int) -> list[int]
   return range(start, end_val)
 end
 
 # Chunk a list into sublists of size n
-cell chunk(lst, size: int)
+pub cell chunk(lst, size: int)
   if size <= 0
     return []
   end
@@ -36,7 +36,7 @@ cell chunk(lst, size: int)
 end
 
 # Zip two lists together
-cell zip(list1, list2)
+pub cell zip(list1, list2)
   let len1 = len(list1)
   let len2 = len(list2)
   let min_len = min(len1, len2)
@@ -53,7 +53,7 @@ cell zip(list1, list2)
 end
 
 # Flatten a list of lists
-cell flatten(nested)
+pub cell flatten(nested)
   let mut result = []
   for sublist in nested
     for item in sublist
@@ -64,7 +64,7 @@ cell flatten(nested)
 end
 
 # Get unique elements from a list
-cell unique(lst)
+pub cell unique(lst)
   let mut result = []
   let mut seen = {}
 
@@ -80,7 +80,7 @@ cell unique(lst)
 end
 
 # Partition a list based on a predicate (returns [matching, not_matching])
-cell partition_by_bool(lst, pred_results: list[bool])
+pub cell partition_by_bool(lst, pred_results: list[bool])
   let mut matching = []
   let mut not_matching = []
   let len_lst = len(lst)
@@ -100,7 +100,7 @@ cell partition_by_bool(lst, pred_results: list[bool])
 end
 
 # Take first n elements
-cell take(lst, n: int)
+pub cell take(lst, n: int)
   if n <= 0
     return []
   end
@@ -117,7 +117,7 @@ cell take(lst, n: int)
 end
 
 # Drop first n elements
-cell drop(lst, n: int)
+pub cell drop(lst, n: int)
   if n <= 0
     return lst
   end
@@ -136,7 +136,7 @@ cell drop(lst, n: int)
 end
 
 # Find index of first occurrence
-cell index_of(lst, item) -> int
+pub cell index_of(lst, item) -> int
   let len_lst = len(lst)
   let mut i = 0
   while i < len_lst
@@ -149,7 +149,7 @@ cell index_of(lst, item) -> int
 end
 
 # Check if all elements satisfy a condition (requires bool list)
-cell all(pred_results: list[bool]) -> bool
+pub cell all(pred_results: list[bool]) -> bool
   for result in pred_results
     if not result
       return false
@@ -159,7 +159,7 @@ cell all(pred_results: list[bool]) -> bool
 end
 
 # Check if any element satisfies a condition (requires bool list)
-cell any(pred_results: list[bool]) -> bool
+pub cell any(pred_results: list[bool]) -> bool
   for result in pred_results
     if result
       return true
@@ -169,7 +169,7 @@ cell any(pred_results: list[bool]) -> bool
 end
 
 # Sum of integers
-cell sum_ints(lst: list[int]) -> int
+pub cell sum_ints(lst: list[int]) -> int
   let mut total = 0
   for item in lst
     total = total + item
@@ -178,7 +178,7 @@ cell sum_ints(lst: list[int]) -> int
 end
 
 # Product of integers
-cell product_ints(lst: list[int]) -> int
+pub cell product_ints(lst: list[int]) -> int
   if len(lst) == 0
     return 0
   end
@@ -190,7 +190,7 @@ cell product_ints(lst: list[int]) -> int
 end
 
 # Intersperse a separator between list elements
-cell intersperse(lst, separator)
+pub cell intersperse(lst, separator)
   let len_lst = len(lst)
   if len_lst <= 1
     return lst
@@ -209,7 +209,7 @@ cell intersperse(lst, separator)
 end
 
 # Group consecutive equal elements
-cell group(lst)
+pub cell group(lst)
   if len(lst) == 0
     return []
   end

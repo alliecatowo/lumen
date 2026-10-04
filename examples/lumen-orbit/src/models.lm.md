@@ -3,7 +3,7 @@
 Shared records for the Orbit workspace pipeline.
 
 ```lumen
-record OrbitContext
+pub record OrbitContext
   workspace: String
   tenant: String
   region: String
@@ -11,7 +11,7 @@ record OrbitContext
   launch_window: String
 end
 
-record Mission
+pub record Mission
   id: String
   title: String
   priority: Int
@@ -20,31 +20,31 @@ record Mission
   tags: list[String]
 end
 
-record MissionQueue
+pub record MissionQueue
   context: OrbitContext
   missions: list[Mission]
 end
 
-record PlannedStep
+pub record PlannedStep
   step_no: Int
   phase: String
   tool_alias: String
   summary: String
 end
 
-record PromptPacket
+pub record PromptPacket
   system_prompt: String
   user_prompt: String
   target_model: String
 end
 
-record ToolInvocationSpec
+pub record ToolInvocationSpec
   tool_alias: String
   payload_json: String
   fallback: String
 end
 
-record PlannerSnapshot
+pub record PlannerSnapshot
   stage: String
   selected_tool: String
   plan_preview: String
@@ -54,14 +54,14 @@ record PlannerSnapshot
   critical_count: Int
 end
 
-record ExecutionCommand
+pub record ExecutionCommand
   attempt: Int
   tool_alias: String
   payload_json: String
   expected_outcome: String
 end
 
-record ExecutionSnapshot
+pub record ExecutionSnapshot
   stage: String
   target_tool: String
   retries: Int
@@ -70,7 +70,7 @@ record ExecutionSnapshot
   error_reason: String
 end
 
-record RecoverySnapshot
+pub record RecoverySnapshot
   stage: String
   status: String
   recommended_tool: String
@@ -78,13 +78,13 @@ record RecoverySnapshot
   escalation_level: Int
 end
 
-record StageEvent
+pub record StageEvent
   stage: String
   tool_alias: String
   outcome: String
 end
 
-record RunSummary
+pub record RunSummary
   workspace: String
   mode: String
   missions_total: Int

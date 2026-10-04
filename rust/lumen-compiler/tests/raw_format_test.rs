@@ -28,11 +28,11 @@ end
 #[test]
 fn test_compile_raw_with_imports() {
     let math_source = r#"
-cell multiply(a: Int, b: Int) -> Int
+pub cell multiply(a: Int, b: Int) -> Int
   return a * b
 end
 
-cell square(x: Int) -> Int
+pub cell square(x: Int) -> Int
   return multiply(x, x)
 end
 "#;
@@ -40,7 +40,7 @@ end
     let main_source = r#"
 import math: square
 
-cell main() -> Int
+pub cell main() -> Int
   return square(5)
 end
 "#;
@@ -75,7 +75,7 @@ end
 #[test]
 fn test_compile_markdown_with_raw_import() {
     let math_source = r#"
-cell square(x: Int) -> Int
+pub cell square(x: Int) -> Int
   return x * x
 end
 "#;
@@ -85,7 +85,7 @@ end
 ```lumen
 import math: square
 
-cell main() -> Int
+pub cell main() -> Int
   return square(9)
 end
 ```
@@ -112,7 +112,7 @@ fn test_compile_raw_with_markdown_import() {
     let math_source = r#"# Math
 
 ```lumen
-cell square(x: Int) -> Int
+pub cell square(x: Int) -> Int
   return x * x
 end
 ```
@@ -121,7 +121,7 @@ end
     let main_source = r#"
 import math: square
 
-cell main() -> Int
+pub cell main() -> Int
   return square(6)
 end
 "#;

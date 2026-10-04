@@ -5,13 +5,13 @@ Utility-facing types and helper cells used by the showcase.
 ```lumen
 type SectionTitle = String
 
-record RenderOptions
+pub record RenderOptions
   show_points: Bool
   prefix_done: String
   prefix_open: String
 end
 
-record DisplayLine
+pub record DisplayLine
   text: String
   priority: Int
 end

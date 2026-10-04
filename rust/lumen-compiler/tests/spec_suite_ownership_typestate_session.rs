@@ -128,10 +128,11 @@ fn ownership_error_mode_passes_clean_code() {
 }
 
 #[test]
-fn ownership_default_is_warn() {
-    // Default CompileOptions should use Warn mode.
+fn ownership_default_is_off() {
+    // Warn mode computes violations and discards them (no warning channel yet), so the
+    // default skips the analysis entirely.
     let opts = CompileOptions::default();
-    assert_eq!(opts.ownership_mode, OwnershipCheckMode::Warn);
+    assert_eq!(opts.ownership_mode, OwnershipCheckMode::Off);
 }
 
 // ============================================================================

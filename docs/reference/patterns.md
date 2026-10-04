@@ -63,12 +63,11 @@ match items
 end
 ```
 
-With rest capture:
+With rest capture (the rest pattern must come last; tail patterns such as `[...rest, last]` are not supported):
 
 ```lumen
 match items
   [first, second, ...rest] -> # first two elements, rest in list
-  [...rest, last] -> # all but last in rest, last separately
 end
 ```
 

@@ -132,3 +132,82 @@ end
     assert_eq!(res.unwrap(), Value::Int(11));
     assert_eq!(out, vec!["g called", "g called"], "g() once per chain");
 }
+
+#[test]
+fn large_list_and_map_literals_compile_and_evaluate() {
+    let list: Vec<String> = (0..600).map(|i| i.to_string()).collect();
+    let pairs: Vec<String> = (0..300).map(|i| format!("\"k{i}\": {i}")).collect();
+    let src = format!(
+        "cell main() -> Int\n  let xs = [{}]\n  let m = {{{}}}\n  return len(xs) + len(m) + xs[599] + m[\"k299\"]\nend\n",
+        list.join(", "),
+        pairs.join(", ")
+    );
+    assert_eq!(run(&src).0.unwrap(), Value::Int(600 + 300 + 599 + 299));
+}
+
+#[test]
+fn map_spread_merges_in_source_order() {
+    let src = r#"
+cell main() -> Int
+  let a = {"x": 1, "y": 2}
+  let b = {"y": 20, "w": 4}
+  let m = {...a, "z": 3, ...b, "x": 10}
+  return len(m) * 1000 + m["x"] * 100 + m["y"] + m["z"] + m["w"]
+end
+"#;
+    // keys: x, y, z, w -> 4 entries; x=10 (last wins), y=20 (b wins over a)
+    assert_eq!(
+        run(src).0.unwrap(),
+        Value::Int(4 * 1000 + 10 * 100 + 20 + 3 + 4)
+    );
+}
+
+#[test]
+fn keyword_named_record_fields_are_kept_and_junk_lines_are_errors() {
+    let src = r#"
+record User
+  name: String
+  role: String = "viewer"
+end
+cell main() -> String
+  let u = User(name: "ada")
+  return u.role
+end
+"#;
+    assert_eq!(
+        run(src).0.unwrap(),
+        Value::String(lumen_runtime::vm::values::StringRef::Owned("viewer".into()))
+    );
+
+    // A line that is not `name: Type` used to be dropped silently.
+    let bad = "record P\n  x: Int\n  y Int\nend\ncell main() -> Int\n  return 1\nend\n";
+    let e = lumen_compiler::compile_raw(bad).unwrap_err().to_string();
+    assert!(e.contains("expected `field: Type`"), "{e}");
+    // Intersection types were parsed as unions.
+    let bad = "type T = Int & String\ncell main() -> Int\n  return 1\nend\n";
+    let e = lumen_compiler::compile_raw(bad).unwrap_err().to_string();
+    assert!(e.contains("intersection"), "{e}");
+}
+
+#[test]
+fn default_parameters_and_named_arguments_bind_by_name() {
+    let src = r#"
+cell add(a: Int, b: Int = 2, c: Int = 30) -> Int
+  return a * 100 + b * 10 + c
+end
+cell sub(a: Int, b: Int) -> Int
+  return a - b
+end
+cell main() -> Int
+  print(add(1))
+  print(add(1, 5))
+  print(add(1, c: 7))
+  print(add(c: 1, a: 9))
+  print(sub(b: 1, a: 10))
+  return add(a: 2, b: 3)
+end
+"#;
+    let (res, out) = run(src);
+    assert_eq!(res.unwrap(), Value::Int(2 * 100 + 3 * 10 + 30));
+    assert_eq!(out, vec!["150", "180", "127", "921", "9"]);
+}

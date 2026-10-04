@@ -13,6 +13,7 @@
 
 import { CertificateAuthority, IdentityClaims } from './src/ca';
 import { compareVersions, parseSemver, pickLatest } from './src/semver';
+import { validatePackageArchive } from './src/package';
 import {
   MAX_DEPS,
   MAX_DESCRIPTION_LEN,
@@ -36,6 +37,13 @@ export interface Env {
   GITHUB_CLIENT_SECRET?: string;
   CA_PRIVATE_KEY?: string;
   CA_CERTIFICATE?: string;
+  /**
+   * Comma-separated GitHub logins and/or numeric ids allowed to publish. Publishing is
+   * invite-only until moderation exists. Unset means just "alliecatowo".
+   */
+  ALLOWED_PUBLISHERS?: string;
+  /** Comma-separated logins/ids that may yank any package. Unset means "alliecatowo". */
+  ADMIN_USERS?: string;
   LOG_WORKER?: { fetch: (input: string, init?: RequestInit) => Promise<Response> };
 }
 
@@ -67,6 +75,8 @@ interface OAuthResult {
 
 interface User {
   identity: string;
+  login?: string;
+  id?: number;
   name?: string;
   avatar?: string;
 }
@@ -84,7 +94,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
   const corsHeaders: Headers_ = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'X-Content-Type-Options': 'nosniff',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Client-Verifier',
   };
 
@@ -181,6 +192,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (path === '/v1/wares' && method === 'PUT') {
       return publishPackage(request, env, corsHeaders);
+    }
+
+    if (path.startsWith('/v1/wares/') && method === 'DELETE') {
+      return yankPackage(request, path.slice('/v1/wares/'.length), env, corsHeaders);
     }
 
     if (path.startsWith('/v1/wares/') && method === 'GET') {
@@ -736,8 +751,12 @@ async function downloadPackage(name: string, version: string, env: Env, corsHead
   }
   return new Response(tarball.body, {
     headers: {
-      'Content-Type': 'application/gzip',
+      // Uploaded bytes are never rendered by a browser on a lumen-lang.com origin.
+      'Content-Type': 'application/octet-stream',
       'Content-Disposition': `attachment; filename="${name.replace('/', '-').replace('@', '')}-${version}.tgz"`,
+      'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; sandbox",
+      'Cross-Origin-Resource-Policy': 'same-site',
+      'Cache-Control': 'public, max-age=31536000, immutable',
       ...corsHeaders,
     },
   });
@@ -794,6 +813,18 @@ async function publishPackage(request: Request, env: Env, corsHeaders: Headers_)
   const user = await validateUser(request, env);
   if (!user) {
     return json({ error: 'Authentication required to publish' }, corsHeaders, 401);
+  }
+  if (!isListed(user, env.ALLOWED_PUBLISHERS, DEFAULT_PUBLISHERS)) {
+    return json(
+      {
+        error: 'Publishing is invite-only for now',
+        detail:
+          'The Wares registry only accepts packages from approved publishers while moderation is being built. ' +
+          'Open an issue at https://github.com/alliecatowo/lumen to request access.',
+      },
+      corsHeaders,
+      403,
+    );
   }
 
   const declared = parseInt(request.headers.get('Content-Length') || '0', 10);
@@ -857,6 +888,15 @@ async function publishPackage(request: Request, env: Env, corsHeaders: Headers_)
   }
   if (data.length > MAX_TARBALL_BYTES) {
     return json({ error: 'Tarball too large' }, corsHeaders, 413);
+  }
+
+  const archive = await validatePackageArchive(data, { name, version });
+  if (!archive.ok) {
+    return json(
+      { error: `Not a valid lumen package: ${archive.error}`, hint: 'Upload the .tgz produced by `wares pack`' },
+      corsHeaders,
+      422,
+    );
   }
 
   const digest = await sha256Hex(data);
@@ -1009,12 +1049,64 @@ export async function verifyAccessToken(token: string, env: Env): Promise<User |
     if (!data?.user?.login) return null;
     return {
       identity: identityFromGithub(data.user),
+      login: data.user.login,
+      id: data.user.id,
       name: data.user.name || data.user.login,
       avatar: data.user.avatar_url,
     };
   } catch {
     return null;
   }
+}
+
+const DEFAULT_PUBLISHERS = 'alliecatowo';
+
+/** True if the user's GitHub login or numeric id is in the comma-separated list. */
+export function isListed(user: User, list: string | undefined, fallback: string): boolean {
+  const entries = (list === undefined || list.trim() === '' ? fallback : list)
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const login = (user.login ?? user.identity.split('/').pop() ?? '').toLowerCase();
+  return entries.includes(login) || (user.id !== undefined && entries.includes(String(user.id)));
+}
+
+/**
+ * Remove a version (or the whole package with no version) from the registry. Allowed for the
+ * package owner and for ADMIN_USERS: the fast path to pull a bad package.
+ * DELETE /v1/wares/<name>/<version>   or   DELETE /v1/wares/<name>
+ */
+async function yankPackage(request: Request, rest: string, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const user = await validateUser(request, env);
+  if (!user) return json({ error: 'Authentication required' }, corsHeaders, 401);
+  const route = parseWaresPath(rest);
+  if (!route || (route.kind !== 'download' && route.kind !== 'package')) {
+    return json({ error: 'Invalid package path' }, corsHeaders, 400);
+  }
+  const indexKey = `wares/${route.name}/index.json`;
+  const obj = await env.REGISTRY_BUCKET.get(indexKey);
+  const index: any = obj ? await obj.json() : null;
+  const admin = isListed(user, env.ADMIN_USERS, DEFAULT_PUBLISHERS);
+  if (!admin && !(index && index.owner === user.identity)) {
+    return json({ error: 'Only the package owner or a registry admin can yank' }, corsHeaders, 403);
+  }
+  if (!index) return json({ error: 'Package not found' }, corsHeaders, 404);
+
+  const versions: string[] = route.kind === 'download' ? [route.version] : [...(index.versions || [])];
+  for (const v of versions) {
+    await env.REGISTRY_BUCKET.delete(`wares/${route.name}/${v}.tarball`);
+    await env.REGISTRY_BUCKET.delete(`wares/${route.name}/${v}.proof.json`);
+  }
+  if (route.kind === 'package') {
+    await env.REGISTRY_BUCKET.delete(indexKey);
+    return json({ success: true, removed: versions, package: route.name }, corsHeaders);
+  }
+  index.versions = (index.versions || []).filter((x: string) => x !== route.version);
+  index.latest = pickLatest(index.versions);
+  index.yanked = { ...(index.yanked || {}), [route.version]: { by: user.identity, at: new Date().toISOString() } };
+  if (index.versionInfo) delete index.versionInfo[route.version];
+  await env.REGISTRY_BUCKET.put(indexKey, JSON.stringify(index), { httpMetadata: { contentType: 'application/json' } });
+  return json({ success: true, removed: versions, package: route.name }, corsHeaders);
 }
 
 async function validateUser(request: Request, env: Env): Promise<User | null> {

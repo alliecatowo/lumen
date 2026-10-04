@@ -23,6 +23,10 @@ bucket_name = "wares-registry"
 # Optional vars:
 #   TRANSPARENCY_LOG_REQUIRED = "false"      let publishes succeed (marked unlogged) if the log rejects them
 [vars]
+# Publishing is invite-only until moderation exists: GitHub logins and/or numeric ids.
+ALLOWED_PUBLISHERS = "alliecatowo"
+# Who may yank (DELETE /v1/wares/<name>[/<version>]) any package.
+ADMIN_USERS = "alliecatowo"
 
 # Service binding to the transparency log worker
 [[services]]

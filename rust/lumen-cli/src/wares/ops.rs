@@ -6,14 +6,12 @@
 use crate::config::{DependencySpec, LumenConfig};
 use crate::git::{checkout_git_commit, fetch_git_repo, GitRef};
 use crate::lockfile::{LockFile, LockedPackage};
-use crate::registry_cmd::{is_authenticated, publish_with_auth};
 use crate::wares::{
-    R2Client, RegistryClient, ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource,
-    Resolver,
+    RegistryClient, ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource, Resolver,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // ANSI color helpers
@@ -1872,75 +1870,54 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Try to publish package directly to R2 storage.
-fn try_publish_to_r2(
-    registry_url: &str,
-    package_name: &str,
-    version: &str,
-    tarball_data: &[u8],
-) -> Result<(), String> {
-    // Extract account_id from registry URL
-    // URL format: https://{account}.r2.cloudflarestorage.com/{bucket}
-    // Or: https://{account}.r2.cloudflarestorage.com
-    let url_without_scheme = registry_url.trim_start_matches("https://");
-    let account_id = url_without_scheme
-        .split('.')
-        .next()
-        .ok_or("Invalid R2 URL - could not extract account ID")?;
+/// `[dependencies]` as `name -> version constraint`. Path and git dependencies cannot be
+/// published: nobody else could resolve them.
+fn publishable_dependencies(config: &LumenConfig) -> Result<BTreeMap<String, String>, String> {
+    let mut deps = BTreeMap::new();
+    for (name, spec) in &config.dependencies {
+        match spec {
+            DependencySpec::Version(v) => {
+                deps.insert(name.clone(), v.clone());
+            }
+            DependencySpec::VersionDetailed { version, .. } => {
+                deps.insert(name.clone(), version.clone());
+            }
+            _ => {
+                return Err(format!(
+                    "dependency '{}' is a path/git/workspace dependency and cannot be published; depend on a registry version instead",
+                    name
+                ))
+            }
+        }
+    }
+    Ok(deps)
+}
 
-    // Get credentials from environment
-    let access_key_id = std::env::var("R2_ACCESS_KEY").map_err(|_| "R2_ACCESS_KEY not set")?;
-    let secret_access_key = std::env::var("R2_SECRET_KEY").map_err(|_| "R2_SECRET_KEY not set")?;
+/// gzip-compress a tar archive for upload.
+fn gzip(data: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(data).map_err(|e| e.to_string())?;
+    encoder.finish().map_err(|e| e.to_string())
+}
 
-    // Create R2 client using the builder pattern
-    let r2_config =
-        crate::wares::R2Config::new(account_id.to_string(), access_key_id, secret_access_key)
-            .with_bucket("lumen-registry");
-
-    let client =
-        R2Client::new(r2_config).map_err(|e| format!("Failed to create R2 client: {}", e))?;
-
-    // Compute hash for the tarball
-    let hash = Sha256::digest(tarball_data);
-    let hash_hex = hex::encode(hash);
-
-    // Upload the tarball
-    let key = format!("wares/{}/{}.tarball", package_name, version);
-    client
-        .put_object(&key, tarball_data, "application/gzip")
-        .map_err(|e| format!("Failed to upload artifact: {}", e))?;
-
-    // Upload the package index
-    let index = crate::wares::RegistryPackageIndex {
-        name: package_name.to_string(),
-        versions: vec![version.to_string()],
-        latest: Some(version.to_string()),
-        yanked: Default::default(),
-        prereleases: vec![],
-        description: None,
-        categories: vec![],
-        downloads: None,
-    };
-
-    let index_json =
-        serde_json::to_string(&index).map_err(|e| format!("Failed to serialize index: {}", e))?;
-
-    let index_key = format!("wares/{}/index.json", package_name);
-    client
-        .put_object(&index_key, index_json.as_bytes(), "application/json")
-        .map_err(|e| format!("Failed to upload index: {}", e))?;
-
-    println!(
-        "  {} uploaded tarball (sha256:{})",
-        green("✓"),
-        &hash_hex[..16]
-    );
-    println!("  {} uploaded index", green("✓"));
-
-    Ok(())
+/// Token for the registry from `LUMEN_AUTH_TOKEN` or the credential store.
+fn stored_access_token(registry_url: &str) -> Option<String> {
+    if let Ok(t) = std::env::var("LUMEN_AUTH_TOKEN") {
+        if !t.trim().is_empty() {
+            return Some(t);
+        }
+    }
+    crate::auth::CredentialManager::new()
+        .ok()
+        .and_then(|cm| cm.get_token(registry_url).ok().flatten())
 }
 
 /// Publish the current package to the registry.
+///
+/// The archive is signed with an ephemeral key whose certificate the registry issues
+/// for the logged-in identity, and uploaded with the same credentials. `--dry-run`
+/// builds and validates everything and talks to no server.
 pub fn publish(dry_run: bool) {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
@@ -1956,7 +1933,6 @@ pub fn publish(dry_run: bool) {
     let project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     let registry_url = config.registry_url();
 
-    // Get package info
     let package_info = match &config.package {
         Some(p) => p,
         None => {
@@ -1968,6 +1944,30 @@ pub fn publish(dry_run: bool) {
     let package_name = &package_info.name;
     let version = package_info.version.as_deref().unwrap_or("0.1.0");
 
+    if !crate::config::is_valid_package_name(package_name) {
+        eprintln!(
+            "{} invalid package name '{}': expected @namespace/name",
+            red("error:"),
+            package_name
+        );
+        std::process::exit(1);
+    }
+    if version.parse::<crate::semver::Version>().is_err() {
+        eprintln!(
+            "{} invalid version '{}': expected semver",
+            red("error:"),
+            version
+        );
+        std::process::exit(1);
+    }
+    let deps = match publishable_dependencies(&config) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            std::process::exit(1);
+        }
+    };
+
     println!(
         "{} {}@{} to {}",
         status_label("Publishing"),
@@ -1976,30 +1976,8 @@ pub fn publish(dry_run: bool) {
         cyan(&registry_url)
     );
 
-    // Check authentication
-    if !is_authenticated(&registry_url) {
-        eprintln!(
-            "{} Not authenticated for {}",
-            red("error:"),
-            cyan(&registry_url)
-        );
-        eprintln!("  Run {} to login", cyan("wares login"));
-        std::process::exit(1);
-    }
-
-    if dry_run {
-        println!(
-            "{} Dry run - would publish to {}",
-            status_label("Info"),
-            cyan(&registry_url)
-        );
-        return;
-    }
-
-    // Create package archive
+    // Build the archive (gzip tar, same layout `wares pack` produces).
     println!("{} creating package archive...", status_label("Packing"));
-
-    // Find all files to include
     let files = collect_package_files(project_dir);
     if files.is_empty() {
         eprintln!(
@@ -2009,44 +1987,31 @@ pub fn publish(dry_run: bool) {
         );
         std::process::exit(1);
     }
-
-    println!("  {} files to publish", files.len());
-
-    // Create tarball
-    let archive_data = match create_tarball(project_dir, &files) {
+    let archive_data = match create_tarball(project_dir, &files).and_then(|t| gzip(&t)) {
         Ok(data) => data,
         Err(e) => {
             eprintln!("{} failed to create archive: {}", red("error:"), e);
             std::process::exit(1);
         }
     };
-
     println!(
-        "{} archive size: {} bytes",
+        "{} {} files, {} (sha256:{})",
         status_label("Packed"),
-        archive_data.len()
+        files.len(),
+        format_size(archive_data.len() as u64),
+        hex::encode(Sha256::digest(&archive_data))
     );
 
-    // Try R2 upload first if credentials are available
-    if registry_url.contains(".r2.cloudflarestorage.com") {
-        match try_publish_to_r2(&registry_url, package_name, version, &archive_data) {
-            Ok(()) => {
-                println!(
-                    "{} published {}@{} to R2",
-                    green("✓"),
-                    bold(package_name),
-                    gray(version)
-                );
-                return;
-            }
-            Err(e) => {
-                eprintln!("{} R2 upload failed: {}", red("error:"), e);
-                eprintln!("  Trying REST API...");
-            }
-        }
+    if dry_run {
+        println!(
+            "{} Dry run: archive built and validated, nothing uploaded ({} dependencies)",
+            status_label("Info"),
+            deps.len()
+        );
+        return;
     }
 
-    // Generate resolution proof
+    // Prove the dependencies resolve, and attach the trail.
     println!(
         "{} generating resolution proof...",
         status_label("Auditing")
@@ -2054,15 +2019,9 @@ pub fn publish(dry_run: bool) {
     let resolver = Resolver::new(&registry_url, None);
     let request = ResolutionRequest {
         root_deps: config.dependencies.clone(),
-        dev_deps: config.dev_dependencies.clone(),
-        build_deps: config.build_dependencies.clone(),
-        features: vec![],
         registry_url: registry_url.clone(),
-        include_dev: false,
-        include_build: false,
-        include_yanked: false,
+        ..ResolutionRequest::default()
     };
-
     let proof_val = match resolver.resolve(&request) {
         Ok(result) => {
             println!(
@@ -2070,7 +2029,7 @@ pub fn publish(dry_run: bool) {
                 green("✓"),
                 result.proof.decisions.len()
             );
-            Some(serde_json::to_value(result.proof).unwrap_or(serde_json::Value::Null))
+            serde_json::to_value(result.proof).ok()
         }
         Err(e) => {
             eprintln!("{} resolution failed: {}", red("error:"), e);
@@ -2079,22 +2038,44 @@ pub fn publish(dry_run: bool) {
         }
     };
 
-    // Publish with authentication via REST API
-    match publish_with_auth(
-        &registry_url,
-        package_name,
-        version,
-        archive_data,
-        proof_val,
-    ) {
-        Ok(()) => {
-            println!(
-                "{} published {}@{}",
-                green("✓"),
-                bold(package_name),
-                gray(version)
-            );
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("{} cannot start async runtime: {}", red("error:"), e);
+            std::process::exit(1);
         }
+    };
+
+    let result = runtime.block_on(async {
+        let mut client =
+            crate::wares::TrustClient::new(registry_url.clone()).map_err(|e| e.to_string())?;
+        if !client.is_authenticated() {
+            match stored_access_token(&registry_url) {
+                Some(token) => client.use_access_token(token),
+                None => {
+                    return Err(format!(
+                        "Not authenticated for {}. Run `wares login` first.",
+                        registry_url
+                    ))
+                }
+            }
+        }
+        client
+            .publish_package(package_name, version, &archive_data, &deps, None, proof_val)
+            .await
+            .map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(_) => println!(
+            "{} published {}@{}",
+            green("✓"),
+            bold(package_name),
+            gray(version)
+        ),
         Err(e) => {
             eprintln!("{} publish failed: {}", red("error:"), e);
             std::process::exit(1);

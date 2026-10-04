@@ -117,6 +117,9 @@ pub struct TrustClient {
     /// Ephemeral signing key paired with the certificate from `get_signing_certificate`.
     /// It lives in memory only and is never written to disk.
     ephemeral_key: Option<p256::ecdsa::SigningKey>,
+    /// Registry token from the credential store / `LUMEN_AUTH_TOKEN`, used instead of an
+    /// OIDC login when present.
+    access_token_override: Option<String>,
 }
 
 /// Base64url (no padding) of `bytes`.
@@ -151,7 +154,14 @@ impl TrustClient {
             http_client,
             config,
             ephemeral_key: None,
+            access_token_override: None,
         })
+    }
+
+    /// Use an existing registry access token (e.g. from `wares login --token`) for
+    /// certificate requests and uploads instead of requiring an OIDC login.
+    pub fn use_access_token(&mut self, token: String) {
+        self.access_token_override = Some(token);
     }
 
     /// Full URL of a registry API endpoint, e.g. `endpoint("auth/cert")`.
@@ -364,6 +374,9 @@ impl TrustClient {
 
     /// Get a fresh OIDC token (using refresh if needed).
     async fn get_oidc_token(&self) -> Result<String, TrustError> {
+        if let Some(token) = &self.access_token_override {
+            return Ok(token.clone());
+        }
         let creds = self.config.get_oidc(&self.registry_url).ok_or_else(|| {
             TrustError::Auth("Not logged in. Run 'wares login' first.".to_string())
         })?;
@@ -411,6 +424,7 @@ impl TrustClient {
         content: &[u8],
         deps: &std::collections::BTreeMap<String, String>,
         provenance: Option<SlsaProvenance>,
+        proof: Option<serde_json::Value>,
     ) -> Result<PackageSignature, TrustError> {
         // Get signing certificate
         let cert = self.get_signing_certificate().await?;
@@ -465,6 +479,7 @@ impl TrustClient {
                 "tarball": STANDARD.encode(content),
                 "shasum": shasum,
                 "deps": deps,
+                "proof": proof,
                 "signature": {
                     "identity": pkg_sig.certificate.identity_str(),
                     "signature": pkg_sig.signature,
@@ -945,6 +960,7 @@ mod signing_tests {
             http_client: reqwest::Client::new(),
             config: TrustConfig::default(),
             ephemeral_key: None,
+            access_token_override: None,
         };
         assert!(client.sign_content_hash(HASH).is_err(), "no key yet");
 
@@ -971,6 +987,7 @@ mod signing_tests {
             http_client: reqwest::Client::new(),
             config: TrustConfig::default(),
             ephemeral_key: Some(key),
+            access_token_override: None,
         };
         assert_eq!(
             spki,

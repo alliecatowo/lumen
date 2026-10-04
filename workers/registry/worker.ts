@@ -828,7 +828,7 @@ async function publishPackage(request: Request, env: Env, corsHeaders: Headers_)
     return json({ error: `description must be a string of at most ${MAX_DESCRIPTION_LEN} characters` }, corsHeaders, 400);
   }
   let proofJson: string | null = null;
-  if (body.proof !== undefined) {
+  if (body.proof !== undefined && body.proof !== null) {
     proofJson = JSON.stringify(body.proof);
     if (typeof body.proof !== 'object' || body.proof === null || proofJson.length > MAX_PROOF_BYTES) {
       return json({ error: 'proof must be a JSON object under 64 KiB' }, corsHeaders, 400);

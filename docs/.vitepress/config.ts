@@ -2,7 +2,8 @@ import { defineConfig } from "vitepress";
 import { shikiLanguages } from "./shiki-languages";
 
 const repository = process.env.GITHUB_REPOSITORY?.split("/")[1] ?? "lumen";
-const base = process.env.CI ? `/${repository}/` : "/";
+// DOCS_BASE=/ builds for lumen-lang.com (Cloudflare Pages); GitHub Pages serves /<repo>/.
+const base = process.env.DOCS_BASE ?? (process.env.CI ? `/${repository}/` : "/");
 const iconHref = `${base}logo.svg`;
 
 export default defineConfig({

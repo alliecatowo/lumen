@@ -329,6 +329,9 @@ pub struct SymbolTable {
     pub traits: HashMap<String, TraitInfo>,
     pub impls: Vec<ImplInfo>,
     pub consts: HashMap<String, ConstInfo>,
+    /// Private names (cell/type) skipped by wildcard imports, mapped to their module. Used to
+    /// report a use of one as a private import instead of an undefined name.
+    pub private_imports: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -495,6 +498,7 @@ impl SymbolTable {
             traits: HashMap::new(),
             impls: Vec::new(),
             consts: HashMap::new(),
+            private_imports: HashMap::new(),
         }
     }
 

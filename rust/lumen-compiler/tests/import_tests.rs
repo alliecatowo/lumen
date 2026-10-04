@@ -313,3 +313,42 @@ fn importing_a_private_symbol_is_an_error_and_wildcards_skip_it() {
     let ok = "import util: shown\n\ncell main() -> Int\n  return shown(1)\nend\n";
     lumen_compiler::compile_raw_with_imports(ok, &resolver).expect("pub symbol imports");
 }
+
+fn util_resolver(name: &str) -> Option<String> {
+    (name == "util").then(|| {
+        "pub cell shown(n: Int) -> Int\n  return n\nend\n\ncell hidden(n: Int) -> Int\n  return n\nend\n\nrecord Secret\n  v: Int\nend\n\npub record Open\n  v: Int\nend\n"
+            .to_string()
+    })
+}
+
+#[test]
+fn wildcard_import_of_a_private_cell_is_a_compile_error() {
+    let src = "import util: *\n\ncell main() -> Int\n  return hidden(1)\nend\n";
+    let err = lumen_compiler::compile_raw_with_imports(src, &util_resolver)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("PrivateImport"), "{err}");
+    assert!(err.contains("hidden") && err.contains("util"), "{err}");
+}
+
+#[test]
+fn wildcard_import_of_a_private_type_is_a_compile_error() {
+    let src = "import util: *\n\ncell main(s: Secret) -> Int\n  return 1\nend\n";
+    let err = lumen_compiler::compile_raw_with_imports(src, &util_resolver)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("PrivateImport"), "{err}");
+    assert!(err.contains("Secret") && err.contains("util"), "{err}");
+}
+
+#[test]
+fn wildcard_import_still_reaches_pub_items() {
+    let src = "import util: *\n\ncell main(o: Open) -> Int\n  return shown(1)\nend\n";
+    lumen_compiler::compile_raw_with_imports(src, &util_resolver).expect("pub items import");
+}
+
+#[test]
+fn wildcard_import_does_not_flag_a_private_name_defined_locally() {
+    let src = "import util: *\n\ncell hidden(n: Int) -> Int\n  return n\nend\n\ncell main() -> Int\n  return hidden(2)\nend\n";
+    lumen_compiler::compile_raw_with_imports(src, &util_resolver).expect("local definition wins");
+}

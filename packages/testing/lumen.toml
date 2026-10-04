@@ -1,0 +1,8 @@
+[package]
+name = "@alliecatowo/testing"
+version = "0.1.0"
+description = "Assertion helpers and a tiny test runner for Lumen programs."
+authors = ["alliecatowo"]
+license = "MIT"
+repository = "https://github.com/alliecatowo/lumen"
+keywords = ["stdlib", "testing"]

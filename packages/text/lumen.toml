@@ -1,0 +1,8 @@
+[package]
+name = "@alliecatowo/text"
+version = "0.1.0"
+description = "String utilities: pad, truncate, repeat, contains, starts_with, ends_with and more."
+authors = ["alliecatowo"]
+license = "MIT"
+repository = "https://github.com/alliecatowo/lumen"
+keywords = ["stdlib", "text"]

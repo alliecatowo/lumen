@@ -1,0 +1,8 @@
+[package]
+name = "@alliecatowo/math"
+version = "0.1.0"
+description = "Math constants and helpers: abs, min, max, clamp, pow, sqrt, log, floor, ceil, round."
+authors = ["alliecatowo"]
+license = "MIT"
+repository = "https://github.com/alliecatowo/lumen"
+keywords = ["stdlib", "math"]

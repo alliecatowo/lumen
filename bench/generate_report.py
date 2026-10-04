@@ -18,16 +18,38 @@ from collections import defaultdict
 from pathlib import Path
 
 
+FAILURES: dict = defaultdict(lambda: defaultdict(list))
+
+
 def load_csv(path: str) -> list[dict]:
-    """Load benchmark results from CSV."""
+    """Load benchmark results from CSV.
+
+    Runs recorded as ERROR (process failed) or WRONG (output did not match the
+    reference) are excluded from the statistics and collected in FAILURES.
+    """
     rows = []
+    FAILURES.clear()
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row["time_ms"] != "ERROR":
-                row["time_ms"] = float(row["time_ms"])
-                rows.append(row)
+            if row["time_ms"] in ("ERROR", "WRONG"):
+                FAILURES[row["benchmark"]][row["language"]].append(row["time_ms"])
+                continue
+            row["time_ms"] = float(row["time_ms"])
+            rows.append(row)
     return rows
+
+
+def load_meta(csv_path: str) -> dict:
+    """Read `<csv>.meta` (key: value lines) written by run_all.sh, if present."""
+    meta = {}
+    p = Path(csv_path + ".meta")
+    if p.exists():
+        for line in p.read_text().splitlines():
+            if ": " in line:
+                k, v = line.split(": ", 1)
+                meta[k.strip()] = v.strip()
+    return meta
 
 
 def aggregate(rows: list[dict]) -> dict:
@@ -66,6 +88,35 @@ def generate_markdown(data: dict, csv_path: str) -> str:
     lines.append("")
     lines.append(f"Source: `{csv_path}`")
     lines.append("")
+
+    meta = load_meta(csv_path)
+    if meta:
+        lines.append("## Environment")
+        lines.append("")
+        for key in (
+            "date",
+            "repo_commit",
+            "repo_dirty",
+            "lumen",
+            "cpu",
+            "cores",
+            "os",
+            "runs",
+            "gcc",
+            "rustc",
+            "go",
+            "python",
+        ):
+            if key in meta:
+                lines.append(f"- **{key}**: {meta[key]}")
+        lines.append("")
+        lines.append(
+            "Lumen samples are `lumen run <file>` wall-clock (process start-up and "
+            "compilation included). Every sample's output was checked against "
+            "`bench/cross-language/<bench>/expected.txt`; failed or wrong runs are "
+            "excluded from the tables and listed below."
+        )
+        lines.append("")
 
     # All languages across all benchmarks
     all_langs = sorted({lang for bench in data.values() for lang in bench})
@@ -140,6 +191,20 @@ def generate_markdown(data: dict, csv_path: str) -> str:
                 f"| {lang} | {s['median']:.1f} | {s['mean']:.1f} "
                 f"| {s['min']:.1f} | {s['max']:.1f} | {s['stdev']:.1f} | {s['runs']} |"
             )
+        lines.append("")
+
+    # --- Failed / wrong runs ---
+    if FAILURES:
+        lines.append("## Failed or wrong runs (excluded above)")
+        lines.append("")
+        lines.append("| Benchmark | Language | ERROR | WRONG |")
+        lines.append("|-----------|----------|------:|------:|")
+        for bench in sorted(FAILURES):
+            for lang in sorted(FAILURES[bench]):
+                kinds = FAILURES[bench][lang]
+                lines.append(
+                    f"| {bench} | {lang} | {kinds.count('ERROR')} | {kinds.count('WRONG')} |"
+                )
         lines.append("")
 
     # --- Lumen Analysis ---

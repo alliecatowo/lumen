@@ -352,6 +352,10 @@ fn compile_with_imports_internal(
     let mut imported_modules: Vec<LirModule> = Vec::new();
     // (original cell name, local alias) for `import m: name as alias`
     let mut cell_aliases: Vec<(String, String)> = Vec::new();
+    // Private cells/types skipped by wildcard imports: name -> module, so a use of one
+    // is reported as a private import rather than a bare "undefined".
+    let mut wildcard_private: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // Collect all imports
     let imports: Vec<&ImportDecl> = program
@@ -458,11 +462,19 @@ fn compile_with_imports_internal(
                             for (name, info) in imported_symbols.cells {
                                 if info.is_pub {
                                     base_symbols.import_cell(name, info);
+                                } else {
+                                    wildcard_private
+                                        .entry(name)
+                                        .or_insert_with(|| module_path.clone());
                                 }
                             }
                             for (name, info) in imported_symbols.types {
                                 if info.is_public() {
                                     base_symbols.import_type(name, info);
+                                } else {
+                                    wildcard_private
+                                        .entry(name)
+                                        .or_insert_with(|| module_path.clone());
                                 }
                             }
                             for (name, type_expr) in imported_symbols.type_aliases {
@@ -540,18 +552,29 @@ fn compile_with_imports_internal(
 
     // 7. Resolve with imported symbols pre-populated (collect errors, continue with partial table)
     // Use resolve_with_base_partial so imported symbols are available during resolution
+    base_symbols.private_imports = wildcard_private.clone();
     let (symbols, resolve_errors) =
         compiler::resolve::resolve_with_base_partial(&program, base_symbols);
+    let mut resolve_errors = private_wildcard_errors(resolve_errors, &wildcard_private);
     let mut all_errors: Vec<CompileError> = Vec::new();
     if !import_errors.is_empty() {
         all_errors.push(CompileError::Resolve(import_errors));
     }
+    let type_errors = compiler::typecheck::typecheck(&program, &symbols).err();
+    let type_errors = match type_errors {
+        Some(errs) => {
+            let (rest, private_uses) = split_private_uses(errs, &wildcard_private);
+            resolve_errors.extend(private_uses);
+            rest
+        }
+        None => Vec::new(),
+    };
     if !resolve_errors.is_empty() {
         all_errors.push(CompileError::Resolve(resolve_errors));
     }
 
     // 8. Typecheck (run even if resolve had errors, using partial symbol table)
-    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+    if !type_errors.is_empty() {
         all_errors.push(CompileError::Type(type_errors));
     }
 
@@ -578,6 +601,63 @@ fn compile_with_imports_internal(
     add_cell_aliases(&mut module, &cell_aliases);
 
     Ok(module)
+}
+
+/// Turn "undefined cell/type" errors for names a wildcard import skipped because they are
+/// private into `PrivateImport` errors.
+fn private_wildcard_errors(
+    errors: Vec<compiler::resolve::ResolveError>,
+    private: &std::collections::HashMap<String, String>,
+) -> Vec<compiler::resolve::ResolveError> {
+    use compiler::resolve::ResolveError;
+    errors
+        .into_iter()
+        .map(|e| match e {
+            ResolveError::UndefinedCell { name, line, .. }
+            | ResolveError::UndefinedType { name, line, .. }
+                if private.contains_key(&name) =>
+            {
+                ResolveError::PrivateImport {
+                    module: private[&name].clone(),
+                    symbol: name,
+                    line,
+                }
+            }
+            other => other,
+        })
+        .collect()
+}
+
+/// Split typecheck errors into those that are really uses of a private name skipped by a
+/// wildcard import (reported as `PrivateImport`) and the rest.
+fn split_private_uses(
+    errors: Vec<compiler::typecheck::TypeError>,
+    private: &std::collections::HashMap<String, String>,
+) -> (
+    Vec<compiler::typecheck::TypeError>,
+    Vec<compiler::resolve::ResolveError>,
+) {
+    use compiler::typecheck::TypeError;
+    let mut rest = Vec::new();
+    let mut privates: Vec<compiler::resolve::ResolveError> = Vec::new();
+    for e in errors {
+        match e {
+            TypeError::UndefinedVar { name, line } if private.contains_key(&name) => {
+                let dup = privates.iter().any(|p| {
+                    matches!(p, compiler::resolve::ResolveError::PrivateImport { symbol, line: l, .. } if *symbol == name && *l == line)
+                });
+                if !dup {
+                    privates.push(compiler::resolve::ResolveError::PrivateImport {
+                        module: private[&name].clone(),
+                        symbol: name,
+                        line,
+                    });
+                }
+            }
+            other => rest.push(other),
+        }
+    }
+    (rest, privates)
 }
 
 /// Make `import m: name as alias` callable at runtime: the symbol table already
@@ -639,6 +719,10 @@ fn compile_raw_with_imports_internal(
     let mut imported_modules: Vec<LirModule> = Vec::new();
     // (original cell name, local alias) for `import m: name as alias`
     let mut cell_aliases: Vec<(String, String)> = Vec::new();
+    // Private cells/types skipped by wildcard imports: name -> module, so a use of one
+    // is reported as a private import rather than a bare "undefined".
+    let mut wildcard_private: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // Collect all imports
     let imports: Vec<&ImportDecl> = program
@@ -744,11 +828,19 @@ fn compile_raw_with_imports_internal(
                             for (name, info) in imported_symbols.cells {
                                 if info.is_pub {
                                     base_symbols.import_cell(name, info);
+                                } else {
+                                    wildcard_private
+                                        .entry(name)
+                                        .or_insert_with(|| module_path.clone());
                                 }
                             }
                             for (name, info) in imported_symbols.types {
                                 if info.is_public() {
                                     base_symbols.import_type(name, info);
+                                } else {
+                                    wildcard_private
+                                        .entry(name)
+                                        .or_insert_with(|| module_path.clone());
                                 }
                             }
                             for (name, type_expr) in imported_symbols.type_aliases {
@@ -825,18 +917,29 @@ fn compile_raw_with_imports_internal(
     }
 
     // 4. Resolve with imported symbols pre-populated (collect errors, continue with partial table)
+    base_symbols.private_imports = wildcard_private.clone();
     let (symbols, resolve_errors) =
         compiler::resolve::resolve_with_base_partial(&program, base_symbols);
+    let mut resolve_errors = private_wildcard_errors(resolve_errors, &wildcard_private);
     let mut all_errors: Vec<CompileError> = Vec::new();
     if !import_errors.is_empty() {
         all_errors.push(CompileError::Resolve(import_errors));
     }
+    let type_errors = compiler::typecheck::typecheck(&program, &symbols).err();
+    let type_errors = match type_errors {
+        Some(errs) => {
+            let (rest, private_uses) = split_private_uses(errs, &wildcard_private);
+            resolve_errors.extend(private_uses);
+            rest
+        }
+        None => Vec::new(),
+    };
     if !resolve_errors.is_empty() {
         all_errors.push(CompileError::Resolve(resolve_errors));
     }
 
     // 5. Typecheck (run even if resolve had errors, using partial symbol table)
-    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+    if !type_errors.is_empty() {
         all_errors.push(CompileError::Type(type_errors));
     }
 
@@ -896,14 +999,23 @@ fn compile_raw_with_options_inner(
     }
 
     // 3. Resolve (collect errors but continue with partial symbol table)
-    let (symbols, resolve_errors) = compiler::resolve::resolve_partial(&program);
+    let (symbols, mut resolve_errors) = compiler::resolve::resolve_partial(&program);
     let mut all_errors: Vec<CompileError> = Vec::new();
+    let type_errors = compiler::typecheck::typecheck(&program, &symbols).err();
+    let type_errors = match type_errors {
+        Some(errs) => {
+            let (rest, private_uses) = split_private_uses(errs, &Default::default());
+            resolve_errors.extend(private_uses);
+            rest
+        }
+        None => Vec::new(),
+    };
     if !resolve_errors.is_empty() {
         all_errors.push(CompileError::Resolve(resolve_errors));
     }
 
     // 4. Typecheck (run even if resolve had errors, using partial symbol table)
-    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+    if !type_errors.is_empty() {
         all_errors.push(CompileError::Type(type_errors));
     }
 
@@ -986,14 +1098,23 @@ fn compile_with_options_inner(
     }
 
     // 6. Resolve (collect errors but continue with partial symbol table)
-    let (symbols, resolve_errors) = compiler::resolve::resolve_partial(&program);
+    let (symbols, mut resolve_errors) = compiler::resolve::resolve_partial(&program);
     let mut all_errors: Vec<CompileError> = Vec::new();
+    let type_errors = compiler::typecheck::typecheck(&program, &symbols).err();
+    let type_errors = match type_errors {
+        Some(errs) => {
+            let (rest, private_uses) = split_private_uses(errs, &Default::default());
+            resolve_errors.extend(private_uses);
+            rest
+        }
+        None => Vec::new(),
+    };
     if !resolve_errors.is_empty() {
         all_errors.push(CompileError::Resolve(resolve_errors));
     }
 
     // 7. Typecheck (run even if resolve had errors, using partial symbol table)
-    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+    if !type_errors.is_empty() {
         all_errors.push(CompileError::Type(type_errors));
     }
 

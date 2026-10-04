@@ -1,0 +1,26 @@
+cell isodd(n: Int) -> Bool
+  return n % 2 == 1
+end
+cell both(a: Bool, b: Bool) -> Bool
+  return a and b
+end
+cell flip(a: Bool) -> Bool
+  return not a
+end
+cell main() -> Int
+  let mut odd = 0
+  let mut i = 0
+  while i < 100
+    if isodd(i)
+      odd = odd + 1
+    end
+    i = i + 1
+  end
+  print(odd)
+  print(isodd(3))
+  print(type_of(isodd(3)))
+  print(both(true, false))
+  print(flip(false))
+  print(type_of(flip(true)))
+  return odd
+end

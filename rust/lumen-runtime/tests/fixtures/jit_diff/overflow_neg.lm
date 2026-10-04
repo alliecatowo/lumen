@@ -1,0 +1,8 @@
+cell ng(a: Int) -> Int
+  return -a
+end
+cell main() -> Int
+  print(ng(7))
+  let m = -9223372036854775807 - 1
+  return ng(m)
+end

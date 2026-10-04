@@ -2182,9 +2182,9 @@ impl VM {
         let num_regs = callee_cell.registers as usize;
         let params: Vec<LirParam> = callee_cell.params.clone();
         let cell_regs = callee_cell.registers;
-        let new_base = self.registers.len();
-        self.registers
-            .resize(new_base + num_regs.max(16), Value::Null);
+        // Allocate the callee frame at the register watermark so nested calls
+        // and the Return shrink stay consistent with `register_top`.
+        let new_base = self.grow_registers(num_regs.max(16));
         // Copy captures into frame registers
         for (i, cap) in cv.captures.iter().enumerate() {
             self.check_register(i, cell_regs)?;
@@ -2224,9 +2224,9 @@ impl VM {
             return_register: new_base, // result will be written here
             future_id: None,
         });
-        // Run the VM until this frame returns
-        self.run_until(self.frames.len().saturating_sub(1))?;
-        Ok(self.registers[new_base].clone())
+        // Run the VM until this frame returns; `run_until` hands back the
+        // callee's return value (its registers are already reclaimed).
+        self.run_until(self.frames.len().saturating_sub(1))
     }
 
     /// Execute an intrinsic function by ID.

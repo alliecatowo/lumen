@@ -1,0 +1,11 @@
+cell pick(x: Int | String) -> String
+  return "{x}"
+end
+cell inc(x: Int) -> Int
+  return x + 1
+end
+cell main() -> Int
+  print(pick(5))
+  print(pick("s"))
+  return inc(41)
+end

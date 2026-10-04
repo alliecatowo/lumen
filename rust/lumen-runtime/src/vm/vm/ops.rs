@@ -35,27 +35,10 @@ fn int_op(op: BinaryOp, x: i64, y: i64) -> Option<i64> {
                 x.checked_div(y)
             }
         }
-        BinaryOp::FloorDiv => {
-            if y == 0 {
-                None
-            } else {
-                Some(x.div_euclid(y))
-            }
-        }
-        BinaryOp::Mod => {
-            if y == 0 {
-                None
-            } else {
-                Some(x.rem_euclid(y))
-            }
-        }
-        BinaryOp::Rem => {
-            if y == 0 {
-                None
-            } else {
-                Some(x % y)
-            }
-        }
+        // The checked_* forms also reject i64::MIN / -1 instead of panicking.
+        BinaryOp::FloorDiv => x.checked_div_euclid(y),
+        BinaryOp::Mod => x.checked_rem_euclid(y),
+        BinaryOp::Rem => x.checked_rem(y),
         BinaryOp::Pow => {
             if y < 0 || y > u32::MAX as i64 {
                 None

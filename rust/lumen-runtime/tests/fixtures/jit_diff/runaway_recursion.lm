@@ -1,0 +1,6 @@
+cell down(n: Int) -> Int
+  return 1 + down(n + 1)
+end
+cell main() -> Int
+  return down(0)
+end

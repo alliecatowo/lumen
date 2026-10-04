@@ -1,0 +1,46 @@
+# Integer // % ** shifts and bit ops must agree between interpreter and JIT.
+cell fd(a: Int, b: Int) -> Int
+  return a // b
+end
+cell md(a: Int, b: Int) -> Int
+  return a % b
+end
+cell dv(a: Int, b: Int) -> Int
+  return a / b
+end
+cell pw(a: Int, b: Int) -> Int
+  return a ** b
+end
+cell sl(a: Int, b: Int) -> Int
+  return a << b
+end
+cell sr(a: Int, b: Int) -> Int
+  return a >> b
+end
+cell bits(a: Int, b: Int) -> Int
+  return (a & b) + (a | b) + (a ^ b) + (~a)
+end
+cell neg(a: Int) -> Int
+  return -a
+end
+
+cell main() -> Int
+  print(fd(-7, 2))
+  print(fd(7, -2))
+  print(fd(-7, -2))
+  print(fd(7, 2))
+  print(md(-7, 2))
+  print(md(7, -2))
+  print(md(-7, -2))
+  print(md(7, 2))
+  print(dv(-7, 2))
+  print(dv(7, -2))
+  print(pw(3, 13))
+  print(pw(2, 0))
+  print(sl(1, 62))
+  print(sr(-1024, 3))
+  print(bits(12, 10))
+  print(neg(5))
+  print(neg(-5))
+  return fd(100, 7) + md(100, 7)
+end

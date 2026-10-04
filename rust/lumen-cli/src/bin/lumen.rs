@@ -1358,7 +1358,8 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
     let source = read_source(file);
     let filename = file.display().to_string();
 
-    println!("{} {}", status_label("Compiling"), filename);
+    // Status lines go to stderr so stdout is exactly the LIR JSON (`lumen emit f | jq`).
+    eprintln!("{} {}", status_label("Compiling"), filename);
     let module = match compile_source_file(file, &source, allow_unstable) {
         Ok(m) => m,
         Err(e) => {
@@ -1378,7 +1379,7 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
     });
 
     if let Some(ref out_path) = output {
-        println!("{} LIR to {}", status_label("Emitting"), out_path.display());
+        eprintln!("{} LIR to {}", status_label("Emitting"), out_path.display());
         std::fs::write(out_path, &json).unwrap_or_else(|e| {
             eprintln!(
                 "{} writing to '{}': {}",
@@ -1389,7 +1390,7 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
             std::process::exit(EXIT_ERROR);
         });
     } else {
-        println!("{} LIR to stdout", status_label("Emitting"));
+        eprintln!("{} LIR to stdout", status_label("Emitting"));
         println!("{}", json);
     }
 }

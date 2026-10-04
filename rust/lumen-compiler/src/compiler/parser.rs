@@ -54,6 +54,10 @@ pub enum ParseError {
 /// Prevents cascading error spam from a single root cause.
 const MAX_PARSE_ERRORS: usize = 10;
 
+/// Maximum nesting of expressions / types / patterns / statements (a left-deep
+/// chain such as `1 + 1 + ... + 1` counts one level per operator).
+pub const MAX_AST_DEPTH: usize = 256;
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -63,6 +67,13 @@ pub struct Parser {
     /// treating them as block terminators.
     block_depth: usize,
     errors: Vec<ParseError>,
+    /// Current recursion depth of nested expressions, types, patterns and
+    /// statements (bounded by `MAX_AST_DEPTH` so hostile input cannot overflow the
+    /// stack in this or any later pass).
+    depth: usize,
+    /// While parsing a `match` subject, a line that starts with `-` begins the first
+    /// arm (a negative literal pattern), not a continuation of the subject.
+    in_match_subject: bool,
     /// Language edition for forward-compatible parsing. Default: `"2026"`.
     /// Future editions may alter syntax rules; for now this is threaded
     /// through but does not change parsing behaviour.
@@ -77,6 +88,8 @@ impl Parser {
             bracket_depth: 0,
             block_depth: 0,
             errors: Vec::new(),
+            depth: 0,
+            in_match_subject: false,
             edition: "2026".to_string(),
         }
     }
@@ -89,8 +102,27 @@ impl Parser {
             bracket_depth: 0,
             block_depth: 0,
             errors: Vec::new(),
+            depth: 0,
+            in_match_subject: false,
             edition,
         }
+    }
+
+    /// Account for one more level of nesting, failing cleanly when the program
+    /// is nested deeper than `MAX_AST_DEPTH`.
+    fn enter_nested(&mut self, what: &str) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_AST_DEPTH {
+            let tok = self.current().clone();
+            self.depth -= 1;
+            return Err(ParseError::MalformedConstruct {
+                construct: what.to_string(),
+                reason: format!("nesting is too deep (limit {MAX_AST_DEPTH})"),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        Ok(())
     }
 
     /// Record a parse error and continue parsing.
@@ -764,7 +796,6 @@ impl Parser {
                 "pipeline" | "orchestration" | "machine" | "memory" | "guardrail" | "eval"
                 | "pattern" => Ok(Item::Process(self.parse_process_decl()?)),
                 _ => {
-                    eprintln!("DEBUG: Ident fallback for {}", name);
                     let tok = self.current().clone();
                     Err(ParseError::Unexpected {
                         found: name.clone(),
@@ -776,7 +807,6 @@ impl Parser {
             },
             _ => {
                 let kind = format!("{}", self.peek_kind());
-                eprintln!("DEBUG: General fallback for {}", kind);
                 let tok = self.current().clone();
                 Err(ParseError::Unexpected {
                     found: kind,
@@ -1295,6 +1325,13 @@ impl Parser {
     // ── Statements ──
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.enter_nested("statement")?;
+        let result = self.parse_stmt_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_stmt_inner(&mut self) -> Result<Stmt, ParseError> {
         // Inside a cell body (block_depth > 0), allow local record/enum/cell definitions
         if self.block_depth > 0 {
             match self.peek_kind() {
@@ -1417,10 +1454,43 @@ impl Parser {
     }
 
     fn is_addon_stmt_keyword(&self) -> bool {
-        matches!(
+        let is_keyword = matches!(
             self.peek_kind(),
             TokenKind::Ident(name)
                 if matches!(name.as_str(), "approve" | "checkpoint" | "escalate" | "observe" | "with" | "with_tool")
+        );
+        // `observe(5)`, `observe = 1`, `observe.x` ... are ordinary expressions or
+        // assignments to a user cell/variable that happens to share the name.
+        is_keyword
+            && !matches!(
+                self.peek_n_kind(1),
+                Some(
+                    TokenKind::LParen
+                        | TokenKind::LBracket
+                        | TokenKind::Dot
+                        | TokenKind::Assign
+                        | TokenKind::PlusAssign
+                        | TokenKind::MinusAssign
+                        | TokenKind::StarAssign
+                        | TokenKind::SlashAssign
+                )
+            )
+    }
+
+    /// Does the token after the one just consumed begin an operand (so that a
+    /// preceding contextual keyword is acting as a prefix form)?
+    fn next_token_starts_operand(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::Ident(_)
+                | TokenKind::IntLit(_)
+                | TokenKind::BigIntLit(_)
+                | TokenKind::FloatLit(_)
+                | TokenKind::StringLit(_)
+                | TokenKind::StringInterpLit(_)
+                | TokenKind::RawStringLit(_)
+                | TokenKind::BoolLit(_)
+                | TokenKind::NullLit
         )
     }
 
@@ -1761,7 +1831,10 @@ impl Parser {
 
     fn parse_match(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::Match)?.span;
-        let subject = self.parse_expr(0)?;
+        let outer = std::mem::replace(&mut self.in_match_subject, true);
+        let subject = self.parse_expr(0);
+        self.in_match_subject = outer;
+        let subject = subject?;
         self.skip_newlines();
         let mut arms = Vec::new();
         let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
@@ -1838,6 +1911,116 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        self.enter_nested("pattern")?;
+        let result = self.parse_pattern_inner();
+        self.depth -= 1;
+        result
+    }
+
+    /// Build `o0 op0 o1 and o1 op1 o2 and ...` from a comparison chain. Operands
+    /// that are not trivially pure and are used twice (the middle ones) are bound
+    /// to temporaries first, so side effects happen once and in source order.
+    fn desugar_comparison_chain(mut operands: Vec<Expr>, ops: Vec<BinOp>) -> Expr {
+        let total_span = operands[0]
+            .span()
+            .merge(operands[operands.len() - 1].span());
+        let is_simple = |e: &Expr| {
+            matches!(
+                e,
+                Expr::Ident(..)
+                    | Expr::IntLit(..)
+                    | Expr::FloatLit(..)
+                    | Expr::StringLit(..)
+                    | Expr::BoolLit(..)
+                    | Expr::NullLit(..)
+            )
+        };
+        let n = operands.len();
+        let mut stmts: Vec<Stmt> = Vec::new();
+        if (1..n - 1).any(|i| !is_simple(&operands[i])) {
+            // Bind every non-simple operand, left to right, to keep evaluation order.
+            for (i, operand) in operands.iter_mut().enumerate() {
+                if is_simple(operand) {
+                    continue;
+                }
+                let span = operand.span();
+                let name = format!("__cmp_{}_{}_{}", span.line, span.col, i);
+                let value = std::mem::replace(operand, Expr::Ident(name.clone(), span));
+                stmts.push(Stmt::Let(LetStmt {
+                    name,
+                    mutable: false,
+                    pattern: None,
+                    ty: None,
+                    value,
+                    span,
+                }));
+            }
+        }
+        let mut result: Option<Expr> = None;
+        for (i, op) in ops.into_iter().enumerate() {
+            let l = operands[i].clone();
+            let r = operands[i + 1].clone();
+            let span = l.span().merge(r.span());
+            let cmp = Expr::BinOp(Box::new(l), op, Box::new(r), span);
+            result = Some(match result {
+                None => cmp,
+                Some(prev) => {
+                    let sp = prev.span().merge(cmp.span());
+                    Expr::BinOp(Box::new(prev), BinOp::And, Box::new(cmp), sp)
+                }
+            });
+        }
+        let expr = result.expect("comparison chain has at least one operator");
+        if stmts.is_empty() {
+            expr
+        } else {
+            stmts.push(Stmt::Expr(ExprStmt {
+                expr,
+                span: total_span,
+            }));
+            Expr::BlockExpr(stmts, total_span)
+        }
+    }
+
+    /// The (possibly negative) numeric literal after `..` / `..=` in a range pattern.
+    fn parse_pattern_range_end(&mut self) -> Result<Expr, ParseError> {
+        let negative = if matches!(self.peek_kind(), TokenKind::Minus)
+            && matches!(
+                self.peek_n_kind(1),
+                Some(TokenKind::IntLit(_) | TokenKind::FloatLit(_))
+            ) {
+            Some(self.advance().span)
+        } else {
+            None
+        };
+        match self.peek_kind().clone() {
+            TokenKind::IntLit(en) => {
+                let es = self.advance().span;
+                Ok(match negative {
+                    Some(m) => Expr::IntLit(en.wrapping_neg(), m.merge(es)),
+                    None => Expr::IntLit(en, es),
+                })
+            }
+            TokenKind::FloatLit(en) => {
+                let es = self.advance().span;
+                Ok(match negative {
+                    Some(m) => Expr::FloatLit(-en, m.merge(es)),
+                    None => Expr::FloatLit(en, es),
+                })
+            }
+            _ => {
+                let tok = self.current().clone();
+                Err(ParseError::Unexpected {
+                    found: format!("{}", tok.kind),
+                    expected: "numeric literal for range end".into(),
+                    line: tok.span.line,
+                    col: tok.span.col,
+                })
+            }
+        }
+    }
+
+    fn parse_pattern_inner(&mut self) -> Result<Pattern, ParseError> {
         if matches!(self.peek_kind(), TokenKind::LParen) {
             let s = self.advance().span;
             if self.paren_contains_top_level_arrow() {
@@ -1925,25 +2108,7 @@ impl Parser {
                 if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotEq) {
                     let inclusive = matches!(self.peek_kind(), TokenKind::DotDotEq);
                     self.advance();
-                    let end_expr = match self.peek_kind().clone() {
-                        TokenKind::IntLit(en) => {
-                            let es = self.advance().span;
-                            Expr::IntLit(en, es)
-                        }
-                        TokenKind::FloatLit(en) => {
-                            let es = self.advance().span;
-                            Expr::FloatLit(en, es)
-                        }
-                        _ => {
-                            let tok = self.current().clone();
-                            return Err(ParseError::Unexpected {
-                                found: format!("{}", tok.kind),
-                                expected: "numeric literal for range end".into(),
-                                line: tok.span.line,
-                                col: tok.span.col,
-                            });
-                        }
-                    };
+                    let end_expr = self.parse_pattern_range_end()?;
                     let span = s.merge(end_expr.span());
                     return Ok(Pattern::Range {
                         start: Box::new(start_expr),
@@ -1960,25 +2125,7 @@ impl Parser {
                 if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotEq) {
                     let inclusive = matches!(self.peek_kind(), TokenKind::DotDotEq);
                     self.advance();
-                    let end_expr = match self.peek_kind().clone() {
-                        TokenKind::IntLit(en) => {
-                            let es = self.advance().span;
-                            Expr::IntLit(en, es)
-                        }
-                        TokenKind::FloatLit(en) => {
-                            let es = self.advance().span;
-                            Expr::FloatLit(en, es)
-                        }
-                        _ => {
-                            let tok = self.current().clone();
-                            return Err(ParseError::Unexpected {
-                                found: format!("{}", tok.kind),
-                                expected: "numeric literal for range end".into(),
-                                line: tok.span.line,
-                                col: tok.span.col,
-                            });
-                        }
-                    };
+                    let end_expr = self.parse_pattern_range_end()?;
                     let span = s.merge(end_expr.span());
                     return Ok(Pattern::Range {
                         start: Box::new(start_expr),
@@ -1988,6 +2135,33 @@ impl Parser {
                     });
                 }
                 Ok(Pattern::Literal(start_expr))
+            }
+            // Negative numeric literals: `-1 -> ...`, `-5..=-1`-style starts.
+            TokenKind::Minus
+                if matches!(
+                    self.peek_n_kind(1),
+                    Some(TokenKind::IntLit(_) | TokenKind::FloatLit(_))
+                ) =>
+            {
+                let minus = self.advance().span;
+                let mut pat = self.parse_pattern_inner()?;
+                let negate = |e: &Expr| -> Expr {
+                    match e {
+                        Expr::IntLit(n, sp) => Expr::IntLit(n.wrapping_neg(), minus.merge(*sp)),
+                        Expr::FloatLit(f, sp) => Expr::FloatLit(-f, minus.merge(*sp)),
+                        other => other.clone(),
+                    }
+                };
+                match &mut pat {
+                    Pattern::Literal(e) => *e = negate(e),
+                    Pattern::Range { start, .. } => **start = negate(start),
+                    _ => {}
+                }
+                Ok(pat)
+            }
+            TokenKind::NullLit => {
+                let s = self.advance().span;
+                Ok(Pattern::Literal(Expr::NullLit(s)))
             }
             TokenKind::StringLit(ref sv) => {
                 let sv = sv.clone();
@@ -4266,6 +4440,13 @@ impl Parser {
     // ── Types ──
 
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
+        self.enter_nested("type")?;
+        let result = self.parse_type_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_type_inner(&mut self) -> Result<TypeExpr, ParseError> {
         let base = self.parse_base_type()?;
         // Check for union: T | U
         if matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Ampersand) {
@@ -4454,9 +4635,31 @@ impl Parser {
     // ── Expressions (Pratt parser) ──
 
     fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+        self.enter_nested("expression")?;
+        let result = self.parse_expr_inner(min_bp);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_expr_inner(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_prefix()?;
+        // Every operator applied in this loop adds a level to the tree we build.
+        let base_depth = self.depth;
+        let mut chain_len = 0usize;
         let mut pending_continuation_dedents: usize = 0;
         loop {
+            chain_len += 1;
+            if base_depth + chain_len > MAX_AST_DEPTH {
+                let tok = self.current().clone();
+                return Err(ParseError::MalformedConstruct {
+                    construct: "expression".to_string(),
+                    reason: format!(
+                        "nesting is too deep or the operator chain is too long (limit {MAX_AST_DEPTH})"
+                    ),
+                    line: tok.span.line,
+                    col: tok.span.col,
+                });
+            }
             while pending_continuation_dedents > 0
                 && matches!(self.peek_kind(), TokenKind::Newline | TokenKind::Dedent)
             {
@@ -4477,35 +4680,47 @@ impl Parser {
                 ) {
                     i += 1;
                 }
-                if matches!(
-                    self.tokens.get(i).map(|t| &t.kind),
-                    Some(
-                        TokenKind::PipeForward
-                            | TokenKind::ComposeArrow
-                            | TokenKind::RightShift
-                            | TokenKind::LeftShift
-                            | TokenKind::Dot
-                            | TokenKind::QuestionQuestion
-                            | TokenKind::Plus
-                            | TokenKind::Minus
-                            | TokenKind::Star
-                            | TokenKind::Slash
-                            | TokenKind::FloorDiv
-                            | TokenKind::Percent
-                            | TokenKind::Eq
-                            | TokenKind::NotEq
-                            | TokenKind::Lt
-                            | TokenKind::LtEq
-                            | TokenKind::Gt
-                            | TokenKind::GtEq
-                            | TokenKind::And
-                            | TokenKind::Or
-                            | TokenKind::In
-                            | TokenKind::Pipe
-                            | TokenKind::Ampersand
-                            | TokenKind::Caret
+                // A line starting with `-` continues the expression only when it is
+                // indented deeper than the previous line (an INDENT is in the
+                // whitespace run). At the same level it starts a new statement, e.g. a
+                // match arm with a negative literal pattern (`-1 -> ...`).
+                let saw_indent = self.tokens[ws_start..i]
+                    .iter()
+                    .any(|t| matches!(t.kind, TokenKind::Indent));
+                let minus_starts_arm =
+                    matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Minus))
+                        && (!saw_indent || (self.in_match_subject && self.bracket_depth == 0));
+                if !minus_starts_arm
+                    && matches!(
+                        self.tokens.get(i).map(|t| &t.kind),
+                        Some(
+                            TokenKind::PipeForward
+                                | TokenKind::ComposeArrow
+                                | TokenKind::RightShift
+                                | TokenKind::LeftShift
+                                | TokenKind::Dot
+                                | TokenKind::QuestionQuestion
+                                | TokenKind::Plus
+                                | TokenKind::Minus
+                                | TokenKind::Star
+                                | TokenKind::Slash
+                                | TokenKind::FloorDiv
+                                | TokenKind::Percent
+                                | TokenKind::Eq
+                                | TokenKind::NotEq
+                                | TokenKind::Lt
+                                | TokenKind::LtEq
+                                | TokenKind::Gt
+                                | TokenKind::GtEq
+                                | TokenKind::And
+                                | TokenKind::Or
+                                | TokenKind::In
+                                | TokenKind::Pipe
+                                | TokenKind::Ampersand
+                                | TokenKind::Caret
+                        )
                     )
-                ) {
+                {
                     while self.pos < i {
                         self.advance();
                     }
@@ -4806,35 +5021,25 @@ impl Parser {
             let rhs = self.parse_expr(r_bp)?;
             let span = lhs.span().merge(rhs.span());
 
-            // Chained comparisons: desugar `a < b < c` into `a < b and b < c`.
-            // Only ordering comparisons (Lt, Gt, LtEq, GtEq) can be chained.
-            // Note: the middle operand `b` is duplicated in the AST and will be
-            // evaluated twice at runtime.
+            // Chained comparisons: `a < b <= c` means `a < b and b <= c` with every
+            // operand evaluated at most once.
             if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
-                let next = self.peek_kind();
-                if matches!(
-                    next,
-                    TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq
-                ) {
-                    let op2 = match self.peek_kind() {
-                        TokenKind::Lt => BinOp::Lt,
-                        TokenKind::LtEq => BinOp::LtEq,
-                        TokenKind::Gt => BinOp::Gt,
-                        TokenKind::GtEq => BinOp::GtEq,
-                        _ => unreachable!(),
-                    };
-                    self.advance();
-                    let rhs2 = self.parse_expr(r_bp)?;
-                    let left_cmp = Expr::BinOp(Box::new(lhs), op, Box::new(rhs.clone()), span);
-                    let right_span = rhs.span().merge(rhs2.span());
-                    let right_cmp = Expr::BinOp(Box::new(rhs), op2, Box::new(rhs2), right_span);
-                    let full_span = left_cmp.span().merge(right_cmp.span());
-                    lhs = Expr::BinOp(
-                        Box::new(left_cmp),
-                        BinOp::And,
-                        Box::new(right_cmp),
-                        full_span,
-                    );
+                let chain_op = |k: &TokenKind| match k {
+                    TokenKind::Lt => Some(BinOp::Lt),
+                    TokenKind::LtEq => Some(BinOp::LtEq),
+                    TokenKind::Gt => Some(BinOp::Gt),
+                    TokenKind::GtEq => Some(BinOp::GtEq),
+                    _ => None,
+                };
+                if chain_op(self.peek_kind()).is_some() {
+                    let mut operands = vec![lhs, rhs];
+                    let mut ops = vec![op];
+                    while let Some(next_op) = chain_op(self.peek_kind()) {
+                        self.advance();
+                        ops.push(next_op);
+                        operands.push(self.parse_expr(r_bp)?);
+                    }
+                    lhs = Self::desugar_comparison_chain(operands, ops);
                     continue;
                 }
             }
@@ -5479,10 +5684,14 @@ impl Parser {
             TokenKind::Ident(_) => {
                 let start = self.current().span;
                 let name = self.expect_ident()?;
-                if name == "agent" {
+                // `agent <expr>` and `confirm <expr>` are prefix forms; a bare
+                // `agent` / `confirm` (or one followed by an operator, `)`, `,`, a
+                // newline...) is an ordinary variable or callee.
+                let prefix_form = self.next_token_starts_operand();
+                if name == "agent" && prefix_form {
                     return self.parse_expr(28);
                 }
-                if name == "confirm" {
+                if name == "confirm" && prefix_form {
                     let arg = self.parse_expr(28)?;
                     let span = start.merge(arg.span());
                     return Ok(Expr::Call(

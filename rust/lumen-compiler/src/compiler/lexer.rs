@@ -35,6 +35,9 @@ pub struct Lexer {
     indent_stack: Vec<usize>,
     pending: Vec<Token>,
     at_line_start: bool,
+    /// True while lexing a number that directly follows a `.` token (tuple field
+    /// access such as `t.0.1`): the number is an integer index, never a float.
+    number_after_dot: bool,
 }
 
 impl Lexer {
@@ -50,6 +53,7 @@ impl Lexer {
             indent_stack: vec![0],
             pending: Vec::new(),
             at_line_start: true,
+            number_after_dot: false,
         }
     }
 
@@ -83,9 +87,11 @@ impl Lexer {
         self.pos += 1;
         self.byte_offset += ch.len_utf8();
         if ch == '\n' {
+            // Only the main tokenizer loop decides that a new logical line
+            // starts (see the '\n' arm of `tokenize`): newlines inside string
+            // literals must not trigger indentation handling.
             self.line += 1;
             self.col = 1;
-            self.at_line_start = true;
         } else {
             self.col += 1;
         }
@@ -382,11 +388,14 @@ impl Lexer {
             return s.to_string();
         }
         // Find minimum indentation of non-empty lines (skip first line which follows """)
+        // Indentation is measured in characters (not bytes) so lines that start
+        // with multi-byte whitespace cannot be sliced mid-character.
+        let leading = |l: &str| l.chars().take_while(|c| c.is_whitespace()).count();
         let min_indent = lines
             .iter()
             .skip(1)
             .filter(|l| !l.trim().is_empty())
-            .map(|l| l.len() - l.trim_start().len())
+            .map(|l| leading(l))
             .min()
             .unwrap_or(0);
 
@@ -394,10 +403,14 @@ impl Lexer {
         for (i, line) in lines.iter().enumerate() {
             if i == 0 {
                 result.push(*line);
-            } else if line.len() >= min_indent {
-                result.push(&line[min_indent..]);
             } else {
-                result.push(line.trim());
+                let strip = leading(line).min(min_indent);
+                let byte = line
+                    .char_indices()
+                    .nth(strip)
+                    .map(|(b, _)| b)
+                    .unwrap_or(line.len());
+                result.push(&line[byte..]);
             }
         }
         // Trim leading/trailing empty lines from the result
@@ -776,7 +789,7 @@ impl Lexer {
             if ch.is_ascii_digit() {
                 ns.push(ch);
                 self.advance();
-            } else if ch == '.' && !is_float {
+            } else if ch == '.' && !is_float && !self.number_after_dot {
                 // Check for .. (range) and ... (spread) - don't consume the dot
                 if self.peek() == Some('.') {
                     break;
@@ -790,7 +803,7 @@ impl Lexer {
                 }
             } else if ch == '_' {
                 self.advance();
-            } else if ch == 'e' || ch == 'E' {
+            } else if (ch == 'e' || ch == 'E') && !self.number_after_dot {
                 // Scientific notation: e.g. 1e10, 1.5e10, 2e-3, 3.14E+2
                 // Peek ahead to validate: must be followed by optional +/- then digit(s)
                 let mut lookahead = self.pos + 1;
@@ -1108,6 +1121,7 @@ impl Lexer {
                 '\n' => {
                     let span = self.span_here();
                     self.advance();
+                    self.at_line_start = true;
                     if !matches!(
                         tokens.last().map(|t| &t.kind),
                         Some(TokenKind::Newline) | Some(TokenKind::Indent) | None
@@ -1126,7 +1140,13 @@ impl Lexer {
                     }
                 }
                 '"' => tokens.push(self.read_string()?),
-                '0'..='9' => tokens.push(self.read_number()?),
+                '0'..='9' => {
+                    self.number_after_dot =
+                        matches!(tokens.last().map(|t| &t.kind), Some(TokenKind::Dot));
+                    let tok = self.read_number();
+                    self.number_after_dot = false;
+                    tokens.push(tok?)
+                }
                 'r' if self.peek() == Some('"') => tokens.push(self.read_raw_string()?),
                 'b' if self.peek() == Some('"') => tokens.push(self.read_bytes_literal()?),
                 'a'..='z' | 'A'..='Z' | '_' => tokens.push(self.read_ident()),
@@ -1844,5 +1864,57 @@ mod tests {
                 .collect()
         };
         assert_eq!(kinds(lf), kinds(&crlf));
+    }
+
+    #[test]
+    fn test_multiline_string_does_not_trigger_indentation() {
+        // Tokens after the closing quotes of a multi-line string stay on the same
+        // logical line (no spurious INDENT/DEDENT).
+        let src =
+            "cell f() -> String\n  return join([\"x\", \"\"\"\n a\n b\n \"\"\"], \",\")\nend\n";
+        let tokens = Lexer::new(src, 1, 0).tokenize().expect("lexes");
+        let indents = tokens
+            .iter()
+            .filter(|t| matches!(t.kind, TokenKind::Indent))
+            .count();
+        assert_eq!(indents, 1, "only the body indent: {tokens:?}");
+    }
+
+    #[test]
+    fn test_dedent_with_multibyte_whitespace_does_not_panic() {
+        // U+2003 EM SPACE is 3 bytes; the continuation line is indented with it.
+        let src = "x = \"\"\"\n\u{2003}\u{2003}a\n b\n\"\"\"\n";
+        let _ = Lexer::new(src, 1, 0).tokenize();
+        let src = "x = \"\"\"\n a\n\u{2003}b\n\"\"\"\n";
+        let _ = Lexer::new(src, 1, 0).tokenize();
+    }
+
+    #[test]
+    fn test_tuple_field_chain_lexes_as_indices() {
+        let kinds: Vec<_> = Lexer::new("t.0.1", 1, 0)
+            .tokenize()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.kind)
+            .collect();
+        assert!(
+            matches!(
+                kinds.as_slice(),
+                [
+                    TokenKind::Ident(_),
+                    TokenKind::Dot,
+                    TokenKind::IntLit(0),
+                    TokenKind::Dot,
+                    TokenKind::IntLit(1),
+                    ..
+                ]
+            ),
+            "{kinds:?}"
+        );
+        // ordinary floats are unaffected
+        let kinds = Lexer::new("x = 0.1 + 1e3", 1, 0).tokenize().unwrap();
+        assert!(kinds
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::FloatLit(f) if f == 0.1)));
     }
 }

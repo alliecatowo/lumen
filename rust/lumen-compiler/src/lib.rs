@@ -184,6 +184,60 @@ fn run_optional_analyses(
     errors
 }
 
+/// Stack size for the compiler thread. Every pass is recursive over the AST and
+/// the parser caps nesting at `MAX_AST_DEPTH`, so this comfortably covers the
+/// worst accepted program even in unoptimised builds; pages are only committed
+/// when touched.
+#[cfg(not(target_arch = "wasm32"))]
+const COMPILER_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// Run `f` on a thread with a large stack (compilation is deeply recursive and
+/// callers such as the LSP, tests and the playground run on small stacks).
+/// Falls back to running inline if the thread cannot be spawned (or on wasm).
+///
+/// All `compile*` entry points already do this. Tools that drive the
+/// individual passes themselves (lexer, parser, resolver, typechecker) should
+/// wrap that work in this function too.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn with_compiler_stack<R, F: FnOnce() -> R>(f: F) -> R {
+    // The closure is run to completion while the calling thread blocks in
+    // `join`, so borrowed data (including non-`Sync` callbacks) is never
+    // accessed concurrently; `SendPtr` only asserts that to the type system.
+    struct AssertSend<T>(T);
+    unsafe impl<T> Send for AssertSend<T> {}
+
+    let mut f = Some(AssertSend(f));
+    let mut out: Option<AssertSend<R>> = None;
+    let spawned = std::thread::scope(|scope| {
+        let f = &mut f;
+        let out = &mut out;
+        let handle = std::thread::Builder::new()
+            .name("lumen-compiler".into())
+            .stack_size(COMPILER_STACK_BYTES)
+            .spawn_scoped(scope, move || {
+                let task = f.take().expect("task present");
+                *out = Some(AssertSend((task.0)()));
+            });
+        match handle {
+            Ok(h) => match h.join() {
+                Ok(()) => true,
+                Err(payload) => std::panic::resume_unwind(payload),
+            },
+            Err(_) => false,
+        }
+    });
+    if spawned {
+        out.expect("compiler thread produced a result").0
+    } else {
+        (f.take().expect("task present").0)()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn with_compiler_stack<R, F: FnOnce() -> R>(f: F) -> R {
+    f()
+}
+
 /// Safe wrapper around the lowering pass that converts register allocation
 /// panics into proper `CompileError::Lower` errors instead of crashing.
 fn lower_safe(
@@ -223,14 +277,16 @@ pub fn compile_with_imports_and_options(
     resolve_import: &dyn Fn(&str) -> Option<String>,
     options: &CompileOptions,
 ) -> Result<LirModule, CompileError> {
-    let mut compilation_stack = HashSet::new();
-    compile_with_imports_internal(
-        source,
-        resolve_import,
-        &mut compilation_stack,
-        None,
-        options,
-    )
+    with_compiler_stack(|| {
+        let mut compilation_stack = HashSet::new();
+        compile_with_imports_internal(
+            source,
+            resolve_import,
+            &mut compilation_stack,
+            None,
+            options,
+        )
+    })
 }
 
 /// Internal implementation that tracks the compilation stack for circular import detection
@@ -522,8 +578,10 @@ pub fn compile_raw_with_imports(
     source: &str,
     resolve_import: &dyn Fn(&str) -> Option<String>,
 ) -> Result<LirModule, CompileError> {
-    let mut compilation_stack = HashSet::new();
-    compile_raw_with_imports_internal(source, resolve_import, &mut compilation_stack, None)
+    with_compiler_stack(|| {
+        let mut compilation_stack = HashSet::new();
+        compile_raw_with_imports_internal(source, resolve_import, &mut compilation_stack, None)
+    })
 }
 
 /// Internal implementation for raw source compilation with imports
@@ -762,6 +820,13 @@ pub fn compile_raw_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> Result<LirModule, CompileError> {
+    with_compiler_stack(|| compile_raw_with_options_inner(source, options))
+}
+
+fn compile_raw_with_options_inner(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<LirModule, CompileError> {
     if source.trim().is_empty() {
         return Ok(LirModule::new("sha256:empty".to_string()));
     }
@@ -814,6 +879,13 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
 
 /// Compile a markdown Lumen source file with optional analysis passes.
 pub fn compile_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<LirModule, CompileError> {
+    with_compiler_stack(|| compile_with_options_inner(source, options))
+}
+
+fn compile_with_options_inner(
     source: &str,
     options: &CompileOptions,
 ) -> Result<LirModule, CompileError> {

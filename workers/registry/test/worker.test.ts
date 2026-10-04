@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleRequest, parseWaresPath, type Env } from '../worker';
 import { FakeR2 } from './fake-r2';
+import { makeArchive, makePackage } from './archive';
+import { gzipSync } from 'node:zlib';
 
 const CLIENT_ID = 'test-client';
 const BASE = 'https://registry.test';
@@ -54,6 +56,7 @@ beforeEach(() => {
     REGISTRY_BUCKET: bucket as any,
     GITHUB_CLIENT_ID: CLIENT_ID,
     GITHUB_CLIENT_SECRET: 'secret',
+    ALLOWED_PUBLISHERS: 'alice,bob',
     TRANSPARENCY_LOG_API_KEY: 'k',
     LOG_WORKER: {
       fetch: async (_u: string, init?: any) => {
@@ -68,7 +71,10 @@ afterEach(() => vi.unstubAllGlobals());
 const call = (path: string, init: RequestInit = {}) => handleRequest(new Request(BASE + path, init), env);
 
 async function publish(token: string | null, over: Record<string, unknown> = {}) {
-  const bytes = new TextEncoder().encode('tarball-bytes-' + Math.random());
+  const name = (over.name as string) ?? '@alice/pkg';
+  const version = (over.version as string) ?? '1.0.0';
+  const bytes = (over.bytes as Uint8Array) ?? makePackage(name, version);
+  delete over.bytes;
   const body = {
     name: '@alice/pkg',
     version: '1.0.0',
@@ -338,5 +344,122 @@ describe('certificates', () => {
     const cert = (await res.json()) as any;
     const certJson = JSON.parse(atob(cert.certificate_pem.split('\n')[1]));
     expect(certJson.subject).toBe('github.com/alice');
+  });
+});
+
+
+const TOML = '[package]\nname = "@alice/pkg"\nversion = "1.0.0"\n';
+const SRC = { path: 'src/main.lm', content: 'cell main() -> Int\n  return 1\nend\n' };
+
+describe('publisher allowlist', () => {
+  it('rejects a valid package from a non-allowlisted account with a clear 403', async () => {
+    appTokens['tok-mallory'] = 'mallory';
+    const { res } = await publish('tok-mallory');
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.error).toMatch(/invite-only/i);
+    expect(bucket.store.size).toBe(0);
+  });
+
+  it('defaults to just alliecatowo when ALLOWED_PUBLISHERS is unset', async () => {
+    delete env.ALLOWED_PUBLISHERS;
+    expect((await publish('tok-alice')).res.status).toBe(403);
+    appTokens['tok-allie'] = 'alliecatowo';
+    expect((await publish('tok-allie', { name: '@alliecatowo/pkg' })).res.status).toBe(201);
+  });
+
+  it('matches numeric GitHub ids too', async () => {
+    env.ALLOWED_PUBLISHERS = '4242';
+    (globalThis.fetch as any).mockImplementation(async (input: any, init?: any) => {
+      if (String(input).includes('/token')) return new Response(JSON.stringify({ user: { login: 'zed', id: 4242 } }), { status: 200 });
+      throw new Error('unexpected ' + input);
+    });
+    expect((await publish('any')).res.status).toBe(201);
+  });
+});
+
+describe('upload validation', () => {
+  const rejects = async (bytes: Uint8Array, why: RegExp) => {
+    const { res } = await publish('tok-alice', { bytes });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as any).error).toMatch(why);
+    expect(bucket.store.size).toBe(0);
+  };
+
+  it('accepts a real package', async () => {
+    expect((await publish('tok-alice')).res.status).toBe(201);
+  });
+
+  it('rejects non-archives (junk, html, svg, zip, png)', async () => {
+    await rejects(new TextEncoder().encode('<html><script>alert(1)</script></html>'), /gzip/i);
+    await rejects(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>'), /gzip/i);
+    await rejects(new Uint8Array([0x50, 0x4b, 3, 4, ...new Array(40).fill(0)]), /gzip/i);
+    await rejects(new Uint8Array([0x89, 0x50, 0x4e, 0x47, ...new Array(40).fill(1)]), /gzip/i);
+  });
+
+  it('rejects a gzip that is not a tar', async () => {
+    await rejects(new Uint8Array(gzipSync(Buffer.from('just some text, not a tar archive'.repeat(50)))), /tar|header|ustar/i);
+  });
+
+  it('rejects disallowed file types and binary content', async () => {
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, SRC, { path: 'src/evil.html', content: '<script>1</script>' }]), /not allowed/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, SRC, { path: 'src/x.svg', content: '<svg/>' }]), /not allowed/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, SRC, { path: 'src/run.exe', content: 'MZ' }]), /not allowed/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, { path: 'src/main.lm', content: new Uint8Array([0, 1, 2, 3]) }]), /Binary/);
+  });
+
+  it('rejects traversal, absolute paths, symlinks and hidden files', async () => {
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, SRC, { path: 'src/../../etc/x.lm', content: 'x' }]), /traversal|not allowed/);
+    await rejects(makeArchive([{ path: '/abs/main.lm', content: 'x' }, { path: 'lumen.toml', content: TOML }]), /absolute|unsafe/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, SRC, { path: 'src/link.lm', type: '2' }]), /Entry type/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, SRC, { path: '.git/config', content: 'x' }]), /hidden|not allowed/);
+  });
+
+  it('requires a matching lumen.toml and at least one source file', async () => {
+    await rejects(makeArchive([SRC]), /Missing lumen\.toml/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, { path: 'README.md', content: '# hi' }]), /no lumen source/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: '[package]\nname = "other"\nversion = "1.0.0"\n' }, SRC]), /does not match/);
+    await rejects(makeArchive([{ path: 'lumen.toml', content: '[package]\nname = "@alice/pkg"\nversion = "9.9.9"\n' }, SRC]), /version/);
+  });
+
+  it('stops decompression bombs', async () => {
+    const big = 'a'.repeat(1_900_000);
+    const entries = Array.from({ length: 40 }, (_, i) => ({ path: `src/f${i}.lm`, content: big }));
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, ...entries]), /decompression|expands/i);
+  });
+
+  it('caps the number of entries', async () => {
+    const entries = Array.from({ length: 1100 }, (_, i) => ({ path: `src/f${i}.lm`, content: 'x' }));
+    await rejects(makeArchive([{ path: 'lumen.toml', content: TOML }, ...entries]), /Too many entries/);
+  });
+});
+
+describe('safe serving and yank', () => {
+  it('serves downloads as an attachment with nosniff and a restrictive CSP', async () => {
+    await publish('tok-alice');
+    const dl = await call('/v1/wares/@alice/pkg/1.0.0');
+    expect(dl.status).toBe(200);
+    expect(dl.headers.get('Content-Type')).toBe('application/octet-stream');
+    expect(dl.headers.get('Content-Disposition')).toMatch(/^attachment;/);
+    expect(dl.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(dl.headers.get('Content-Security-Policy')).toMatch(/default-src 'none'/);
+  });
+
+  it('lets the owner and admins yank, but nobody else', async () => {
+    await publish('tok-alice');
+    const del = (tok: string | null, path = '/v1/wares/@alice/pkg/1.0.0') =>
+      call(path, { method: 'DELETE', headers: tok ? { Authorization: `Bearer ${tok}` } : {} });
+    expect((await del(null)).status).toBe(401);
+    expect((await del('tok-bob')).status).toBe(403);
+    expect(bucket.store.has('wares/@alice/pkg/1.0.0.tarball')).toBe(true);
+    expect((await del('tok-alice')).status).toBe(200);
+    expect(bucket.store.has('wares/@alice/pkg/1.0.0.tarball')).toBe(false);
+    expect((await call('/v1/wares/@alice/pkg/1.0.0')).status).toBe(404);
+
+    await publish('tok-alice', { version: '2.0.0' });
+    appTokens['tok-admin'] = 'root';
+    env.ADMIN_USERS = 'root';
+    expect((await del('tok-admin', '/v1/wares/@alice/pkg')).status).toBe(200);
+    expect([...bucket.store.keys()].filter((k) => k.startsWith('wares/@alice/pkg'))).toEqual([]);
   });
 });

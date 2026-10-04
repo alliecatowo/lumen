@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { handleRequest, parsePackagesPath, type Env } from '../worker';
 import { FakeR2 } from './fake-r2';
+import { makePackage } from './archive';
 
 /**
  * The `wares` CLI (rust/lumen-cli RegistryClient) reads a static registry layout.
@@ -27,14 +28,14 @@ beforeEach(() => {
       throw new Error('unexpected fetch ' + input);
     }),
   );
-  env = { REGISTRY_BUCKET: new FakeR2() as any, GITHUB_CLIENT_ID: 'c', GITHUB_CLIENT_SECRET: 's' };
+  env = { REGISTRY_BUCKET: new FakeR2() as any, GITHUB_CLIENT_ID: 'c', GITHUB_CLIENT_SECRET: 's', ALLOWED_PUBLISHERS: 'alice' };
 });
 afterEach(() => vi.unstubAllGlobals());
 
 const call = (path: string, init: RequestInit = {}) => handleRequest(new Request(BASE + path, init), env);
 
 async function publish(version: string, deps: Record<string, string>, body: Record<string, unknown> = {}) {
-  const bytes = new TextEncoder().encode(`tarball ${version}`);
+  const bytes = makePackage('@t/dep', version, 'fixed');
   const digest = Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex');
   return call('/v1/wares', {
     method: 'PUT',

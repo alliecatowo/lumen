@@ -34,7 +34,7 @@
               Browse All
             </NuxtLink>
             <a 
-              href="https://lumen-lang.com/docs" 
+              href="https://lumen-lang.com/learn/getting-started" 
               target="_blank"
               class="btn-secondary"
             >

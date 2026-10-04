@@ -942,11 +942,11 @@ end
 
 ### 6.19 Spread
 
-`...expr` spreads an iterable into a collection constructor or function call.
+`...expr` spreads an iterable into a list literal, and `{...map, "k": v}` merges maps in source order (later entries win).
 
 ### 6.20 Block Expressions
 
-A block `do ... end` evaluates statements and returns the last expression's value.
+`do ... end` is only available as a trailing block argument (`call() do ... end`, a lambda); there is no standalone `let x = do ... end` block expression. `loop ... end` used as an expression yields the value of `break <expr>`.
 
 ## 7. Patterns
 

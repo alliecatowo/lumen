@@ -21,10 +21,11 @@ use thiserror::Error;
 /// Controls when ownership analysis violations are treated as hard errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OwnershipCheckMode {
-    /// Ownership analysis is completely skipped.
-    Off,
-    /// Ownership violations are detected but do not block compilation (default).
+    /// Ownership analysis is completely skipped (default: there is no warning channel
+    /// yet, so analysing in `Warn` mode would only do work whose result is discarded).
     #[default]
+    Off,
+    /// Ownership violations are computed but not reported; use `Error` to enforce them.
     Warn,
     /// Ownership violations are treated as compile errors.
     Error,

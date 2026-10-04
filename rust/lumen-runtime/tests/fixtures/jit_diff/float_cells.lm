@@ -1,0 +1,16 @@
+cell half(n: Float) -> Float
+  return n / 2.0
+end
+cell scale(x: Float, k: Int) -> Float
+  return x * 3.0 + 0.5
+end
+cell main() -> Int
+  let mut i = 0
+  let mut acc = 0.0
+  while i < 50
+    acc = acc + half(10.0) + scale(1.5, i)
+    i = i + 1
+  end
+  print(acc)
+  return 0
+end

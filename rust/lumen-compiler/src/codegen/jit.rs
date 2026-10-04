@@ -11,9 +11,10 @@
 //! bypass the interpreter entirely.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Type as ClifType};
+use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Type as ClifType};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -22,6 +23,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use crate::compiler::lir::{Constant, Instruction, LirCell, LirModule, OpCode};
 
 use crate::codegen::emit::CodegenError;
+use crate::codegen::jit_verify::{self, CellPlan};
 use crate::codegen::types::lir_type_str_to_cl_type;
 
 /// Maximum number of virtual registers we support per cell.
@@ -158,8 +160,33 @@ pub unsafe fn jit_take_string(ptr: i64) -> String {
     }
 }
 
+/// Integer exponentiation with the interpreter's exact semantics (`checked_pow`,
+/// exponent in `0..=u32::MAX`). On failure it raises the trap flag in the
+/// engine's [`JitState`] (address passed as `state`) and returns 0.
+extern "C" fn jit_rt_ipow(x: i64, y: i64, state: i64) -> i64 {
+    let r = if y < 0 || y > u32::MAX as i64 {
+        None
+    } else {
+        x.checked_pow(y as u32)
+    };
+    match r {
+        Some(v) => v,
+        None => {
+            // SAFETY: `state` is the address of the engine's boxed state, which
+            // outlives all compiled code.
+            unsafe {
+                (*(state as *const JitState))
+                    .trap
+                    .store(1, Ordering::Relaxed)
+            };
+            0
+        }
+    }
+}
+
 /// Register all JIT string runtime helper symbols with a JITBuilder.
 fn register_string_helpers(builder: &mut JITBuilder) {
+    builder.symbol("jit_rt_ipow", jit_rt_ipow as *const u8);
     builder.symbol("jit_rt_string_alloc", jit_rt_string_alloc as *const u8);
     builder.symbol("jit_rt_string_concat", jit_rt_string_concat as *const u8);
     builder.symbol("jit_rt_string_clone", jit_rt_string_clone as *const u8);
@@ -290,6 +317,10 @@ pub enum JitError {
     CellNotFound(String),
     /// JIT module creation failed.
     ModuleError(String),
+    /// Native code hit a condition the interpreter must decide (integer
+    /// overflow, division by zero, bad shift, stack exhaustion). Compiled cells
+    /// are pure, so the caller can safely re-run the call in the interpreter.
+    Trap,
 }
 
 impl std::fmt::Display for JitError {
@@ -298,6 +329,7 @@ impl std::fmt::Display for JitError {
             JitError::CompileError(e) => write!(f, "JIT compile error: {e}"),
             JitError::CellNotFound(name) => write!(f, "cell not found: {name}"),
             JitError::ModuleError(msg) => write!(f, "JIT module error: {msg}"),
+            JitError::Trap => write!(f, "JIT trap (deferred to interpreter)"),
         }
     }
 }
@@ -314,14 +346,45 @@ impl From<CodegenError> for JitError {
 // Cached compiled function
 // ---------------------------------------------------------------------------
 
+/// How the raw `i64` returned by compiled code must be interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitReturn {
+    /// A 64-bit signed integer.
+    Int,
+    /// A boolean encoded as 0 / 1.
+    Bool,
+    /// A heap `*mut String` (experimental tier only).
+    Str,
+}
+
+/// Mutable state shared between a [`JitEngine`] and the native code it owns.
+/// Its address is baked into every compiled function, so it lives in a `Box`.
+#[repr(C)]
+pub(crate) struct JitState {
+    /// Lowest stack address compiled code may use; below it the prologue traps.
+    stack_limit: AtomicI64,
+    /// Non-zero once native code has requested an interpreter fallback.
+    trap: AtomicI64,
+}
+
+const STATE_OFF_STACK_LIMIT: i32 = 0;
+const STATE_OFF_TRAP: i32 = 8;
+
+/// Native stack budget for one top-level JIT call. Windows' main thread only
+/// has 1 MiB, so be more conservative there.
+#[cfg(windows)]
+const JIT_STACK_BUDGET: i64 = 256 * 1024;
+#[cfg(not(windows))]
+const JIT_STACK_BUDGET: i64 = 1024 * 1024;
+
 /// Metadata for a JIT-compiled function.
 struct CompiledFunction {
     /// Raw function pointer to the compiled native code.
     fn_ptr: *const u8,
     /// Number of parameters the function expects.
     param_count: usize,
-    /// True if the function returns a heap-allocated string pointer.
-    returns_string: bool,
+    /// How to interpret the returned `i64`.
+    ret: JitReturn,
 }
 
 // Safety: The function pointers are valid for the lifetime of the JITModule
@@ -352,6 +415,10 @@ pub struct JitEngine {
     codegen_settings: CodegenSettings,
     /// Compilation statistics.
     stats: JitStats,
+    /// Shared trap / stack-limit state read and written by compiled code.
+    state: Box<JitState>,
+    /// When false (the default) only the strict Int/Bool tier is compiled.
+    experimental_types: bool,
 }
 
 impl JitEngine {
@@ -364,7 +431,20 @@ impl JitEngine {
             cache: HashMap::new(),
             codegen_settings: settings,
             stats: JitStats::default(),
+            state: Box::new(JitState {
+                stack_limit: AtomicI64::new(0),
+                trap: AtomicI64::new(0),
+            }),
+            experimental_types: false,
         }
+    }
+
+    /// Opt in to the experimental String/Float lowering. It is **not** verified
+    /// to match the interpreter (float typing, string ownership on error paths)
+    /// and the VM never enables it; it exists for engine-level experiments.
+    pub fn with_experimental_types(mut self, enabled: bool) -> Self {
+        self.experimental_types = enabled;
+        self
     }
 
     /// Record a call to `cell_name` and return `true` if the cell *just*
@@ -401,7 +481,14 @@ impl JitEngine {
         let pointer_type = jit_module.isa().pointer_type();
 
         // Lower all cells into the JIT module.
-        let lowered = lower_module_jit(&mut jit_module, module, pointer_type)?;
+        let state_addr = &*self.state as *const JitState as i64;
+        let lowered = lower_module_jit(
+            &mut jit_module,
+            module,
+            pointer_type,
+            !self.experimental_types,
+            state_addr,
+        )?;
 
         // Finalize all definitions so we can retrieve function pointers.
         jit_module
@@ -416,7 +503,7 @@ impl JitEngine {
                 CompiledFunction {
                     fn_ptr,
                     param_count: func.param_count,
-                    returns_string: func.returns_string,
+                    ret: func.ret,
                 },
             );
             self.stats.cells_compiled += 1;
@@ -455,74 +542,89 @@ impl JitEngine {
         Ok(())
     }
 
-    /// Execute a JIT-compiled function with no arguments.
-    /// Returns the i64 result.
-    ///
-    /// # Safety
-    /// The caller must ensure that the function was compiled with the
-    /// correct signature (no params, returns i64).
-    pub fn execute_jit_nullary(&mut self, cell_name: &str) -> Result<i64, JitError> {
+    /// Run compiled code for `cell_name`. Resets the trap flag, arms the
+    /// stack guard, and converts a raised trap into [`JitError::Trap`].
+    fn run(&mut self, cell_name: &str, args: &[i64]) -> Result<i64, JitError> {
         let compiled = self
             .cache
             .get(cell_name)
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
-
+        if compiled.param_count != args.len() {
+            return Err(JitError::ModuleError(format!(
+                "cell '{cell_name}' expects {} arguments, got {}",
+                compiled.param_count,
+                args.len()
+            )));
+        }
         let fn_ptr = compiled.fn_ptr;
         self.stats.executions += 1;
 
-        // SAFETY: The function pointer was produced by Cranelift JIT and is
-        // valid for the lifetime of the JITModule (which we own). The
-        // caller guarantees the signature matches.
+        let marker = 0u8;
+        let sp = &marker as *const u8 as i64;
+        self.state
+            .stack_limit
+            .store(sp.saturating_sub(JIT_STACK_BUDGET), Ordering::Relaxed);
+        self.state.trap.store(0, Ordering::Relaxed);
+
+        // SAFETY: `fn_ptr` was produced by Cranelift for a function whose
+        // signature is `(i64 x param_count) -> i64`; the JITModule that owns the
+        // code lives as long as `self`.
         let result = unsafe {
-            let code_fn: fn() -> i64 = std::mem::transmute(fn_ptr);
-            code_fn()
+            match args.len() {
+                0 => std::mem::transmute::<*const u8, extern "C" fn() -> i64>(fn_ptr)(),
+                1 => std::mem::transmute::<*const u8, extern "C" fn(i64) -> i64>(fn_ptr)(args[0]),
+                2 => std::mem::transmute::<*const u8, extern "C" fn(i64, i64) -> i64>(fn_ptr)(
+                    args[0], args[1],
+                ),
+                3 => std::mem::transmute::<*const u8, extern "C" fn(i64, i64, i64) -> i64>(fn_ptr)(
+                    args[0], args[1], args[2],
+                ),
+                4 => std::mem::transmute::<*const u8, extern "C" fn(i64, i64, i64, i64) -> i64>(
+                    fn_ptr,
+                )(args[0], args[1], args[2], args[3]),
+                5 => {
+                    std::mem::transmute::<*const u8, extern "C" fn(i64, i64, i64, i64, i64) -> i64>(
+                        fn_ptr,
+                    )(args[0], args[1], args[2], args[3], args[4])
+                }
+                6 => std::mem::transmute::<
+                    *const u8,
+                    extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64,
+                >(fn_ptr)(args[0], args[1], args[2], args[3], args[4], args[5]),
+                n => {
+                    return Err(JitError::ModuleError(format!(
+                        "unsupported arity {n} for JIT execution (max 6)"
+                    )))
+                }
+            }
         };
+        if self.state.trap.swap(0, Ordering::Relaxed) != 0 {
+            return Err(JitError::Trap);
+        }
         Ok(result)
+    }
+
+    /// Execute a JIT-compiled function with no arguments.
+    pub fn execute_jit_nullary(&mut self, cell_name: &str) -> Result<i64, JitError> {
+        self.run(cell_name, &[])
     }
 
     /// Execute a JIT-compiled function with one i64 argument.
-    /// Returns the i64 result.
     pub fn execute_jit_unary(&mut self, cell_name: &str, arg: i64) -> Result<i64, JitError> {
-        let compiled = self
-            .cache
-            .get(cell_name)
-            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
-
-        let fn_ptr = compiled.fn_ptr;
-        self.stats.executions += 1;
-
-        let result = unsafe {
-            let code_fn: fn(i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg)
-        };
-        Ok(result)
+        self.run(cell_name, &[arg])
     }
 
     /// Execute a JIT-compiled function with two i64 arguments.
-    /// Returns the i64 result.
     pub fn execute_jit_binary(
         &mut self,
         cell_name: &str,
         arg1: i64,
         arg2: i64,
     ) -> Result<i64, JitError> {
-        let compiled = self
-            .cache
-            .get(cell_name)
-            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
-
-        let fn_ptr = compiled.fn_ptr;
-        self.stats.executions += 1;
-
-        let result = unsafe {
-            let code_fn: fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg1, arg2)
-        };
-        Ok(result)
+        self.run(cell_name, &[arg1, arg2])
     }
 
     /// Execute a JIT-compiled function with three i64 arguments.
-    /// Returns the i64 result.
     pub fn execute_jit_ternary(
         &mut self,
         cell_name: &str,
@@ -530,33 +632,14 @@ impl JitEngine {
         arg2: i64,
         arg3: i64,
     ) -> Result<i64, JitError> {
-        let compiled = self
-            .cache
-            .get(cell_name)
-            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
-
-        let fn_ptr = compiled.fn_ptr;
-        self.stats.executions += 1;
-
-        let result = unsafe {
-            let code_fn: fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg1, arg2, arg3)
-        };
-        Ok(result)
+        self.run(cell_name, &[arg1, arg2, arg3])
     }
 
-    /// Generic JIT execution dispatching on arity. Supports 0..=3 i64
-    /// arguments.
+    /// Generic JIT execution dispatching on arity. Supports 0..=6 i64
+    /// arguments. Returns [`JitError::Trap`] if the native code asked for an
+    /// interpreter fallback.
     pub fn execute_jit(&mut self, cell_name: &str, args: &[i64]) -> Result<i64, JitError> {
-        match args.len() {
-            0 => self.execute_jit_nullary(cell_name),
-            1 => self.execute_jit_unary(cell_name, args[0]),
-            2 => self.execute_jit_binary(cell_name, args[0], args[1]),
-            3 => self.execute_jit_ternary(cell_name, args[0], args[1], args[2]),
-            n => Err(JitError::ModuleError(format!(
-                "unsupported arity {n} for JIT execution (max 3)"
-            ))),
-        }
+        self.run(cell_name, args)
     }
 
     /// Compile a cell if not already compiled, then execute it.
@@ -599,10 +682,12 @@ impl JitEngine {
 
     /// Check if a compiled cell returns a heap-allocated string pointer.
     pub fn returns_string(&self, cell_name: &str) -> bool {
-        self.cache
-            .get(cell_name)
-            .map(|c| c.returns_string)
-            .unwrap_or(false)
+        self.return_kind(cell_name) == Some(JitReturn::Str)
+    }
+
+    /// How the `i64` returned by `cell_name` must be interpreted.
+    pub fn return_kind(&self, cell_name: &str) -> Option<JitReturn> {
+        self.cache.get(cell_name).map(|c| c.ret)
     }
 }
 
@@ -674,7 +759,7 @@ struct JitLoweredFunction {
     name: String,
     func_id: FuncId,
     param_count: usize,
-    returns_string: bool,
+    ret: JitReturn,
 }
 
 /// Lower an entire LIR module into Cranelift IR inside the given `JITModule`.
@@ -684,8 +769,14 @@ fn lower_module_jit(
     module: &mut JITModule,
     lir: &LirModule,
     pointer_type: ClifType,
+    strict: bool,
+    state_addr: i64,
 ) -> Result<JitLoweredModule, CodegenError> {
     let mut fb_ctx = FunctionBuilderContext::new();
+
+    if strict {
+        return lower_module_strict(module, lir, &mut fb_ctx, state_addr);
+    }
 
     // Filter to only JIT-compilable cells.
     let compilable_cells: Vec<&LirCell> = lir
@@ -751,7 +842,11 @@ fn lower_module_jit(
             name: cell.name.clone(),
             func_id,
             param_count: cell.params.len(),
-            returns_string: ret_is_string,
+            ret: if ret_is_string {
+                JitReturn::Str
+            } else {
+                JitReturn::Int
+            },
         });
     }
 
@@ -1239,7 +1334,7 @@ fn lower_cell_jit(
             }
             OpCode::LoadInt => {
                 let a = inst.a;
-                let imm = inst.b as i8 as i64;
+                let imm = inst.sbx() as i64;
                 let val = builder.ins().iconst(types::I64, imm);
                 def_var(&mut builder, &vars, a, val);
             }
@@ -1834,6 +1929,450 @@ fn lower_cell_jit(
 }
 
 // ---------------------------------------------------------------------------
+// Strict tier: provably interpreter-equivalent Int/Bool cells
+// ---------------------------------------------------------------------------
+
+/// Lower every cell accepted by [`jit_verify::eligible_cells`].
+fn lower_module_strict(
+    module: &mut JITModule,
+    lir: &LirModule,
+    fb_ctx: &mut FunctionBuilderContext,
+    state_addr: i64,
+) -> Result<JitLoweredModule, CodegenError> {
+    let eligible = jit_verify::eligible_cells(&lir.cells);
+    let cells: Vec<&LirCell> = lir
+        .cells
+        .iter()
+        .filter(|c| eligible.contains_key(&c.name))
+        .collect();
+    let mut lowered = JitLoweredModule {
+        functions: Vec::with_capacity(cells.len()),
+    };
+    if cells.is_empty() {
+        return Ok(lowered);
+    }
+
+    let mut func_ids: HashMap<String, FuncId> = HashMap::new();
+    for cell in &cells {
+        let mut sig = module.make_signature();
+        for _ in &cell.params {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        let id = module
+            .declare_function(&cell.name, Linkage::Export, &sig)
+            .map_err(|e| {
+                CodegenError::LoweringError(format!("declare_function({}): {e}", cell.name))
+            })?;
+        func_ids.insert(cell.name.clone(), id);
+    }
+
+    for cell in &cells {
+        let (sig, plan) = &eligible[&cell.name];
+        lower_cell_strict(
+            module,
+            cell,
+            plan,
+            fb_ctx,
+            func_ids[&cell.name],
+            &func_ids,
+            state_addr,
+        )?;
+        lowered.functions.push(JitLoweredFunction {
+            name: cell.name.clone(),
+            func_id: func_ids[&cell.name],
+            param_count: cell.params.len(),
+            ret: match sig.ret {
+                jit_verify::ScalarTy::Int => JitReturn::Int,
+                jit_verify::ScalarTy::Bool => JitReturn::Bool,
+            },
+        });
+    }
+    Ok(lowered)
+}
+
+/// Branch to `trap_blk` when `cond` (an i8 boolean) is non-zero, otherwise
+/// continue in a fresh block.
+fn trap_if(
+    builder: &mut FunctionBuilder,
+    cond: cranelift_codegen::ir::Value,
+    trap_blk: cranelift_codegen::ir::Block,
+) {
+    let cont = builder.create_block();
+    builder.ins().brif(cond, trap_blk, &[], cont, &[]);
+    builder.switch_to_block(cont);
+}
+
+/// Trap if the engine's trap flag has been raised (after a call or helper).
+fn trap_if_flagged(
+    builder: &mut FunctionBuilder,
+    state_addr: i64,
+    trap_blk: cranelift_codegen::ir::Block,
+) {
+    let st = builder.ins().iconst(types::I64, state_addr);
+    let flag = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), st, STATE_OFF_TRAP);
+    let set = builder.ins().icmp_imm(IntCC::NotEqual, flag, 0);
+    trap_if(builder, set, trap_blk);
+}
+
+fn lower_cell_strict(
+    module: &mut JITModule,
+    cell: &LirCell,
+    plan: &CellPlan,
+    fb_ctx: &mut FunctionBuilderContext,
+    func_id: FuncId,
+    func_ids: &HashMap<String, FuncId>,
+    state_addr: i64,
+) -> Result<(), CodegenError> {
+    use cranelift_codegen::ir::Block;
+
+    let mut sig = module.make_signature();
+    for _ in &cell.params {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig.returns.push(AbiParam::new(types::I64));
+    let mut func = cranelift_codegen::ir::Function::with_name_signature(
+        cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32()),
+        sig,
+    );
+
+    let mut callee_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
+    for name in plan.callees.values() {
+        if !callee_refs.contains_key(name) {
+            let r = module.declare_func_in_func(func_ids[name], &mut func);
+            callee_refs.insert(name.clone(), r);
+        }
+    }
+    let pow_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_ipow",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+
+    let mut builder = FunctionBuilder::new(&mut func, fb_ctx);
+    let nregs = (cell.registers as usize).max(cell.params.len()).max(1);
+    let vars: Vec<Variable> = (0..nregs)
+        .map(|_| builder.declare_var(types::I64))
+        .collect();
+
+    let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+    for (i, var) in vars.iter().enumerate() {
+        let v = if i < cell.params.len() {
+            builder.block_params(entry)[i]
+        } else {
+            builder.ins().iconst(types::I64, 0)
+        };
+        builder.def_var(*var, v);
+    }
+
+    let trap_blk = builder.create_block();
+
+    // Prologue: refuse to run if the native stack budget is exhausted.
+    let st = builder.ins().iconst(types::I64, state_addr);
+    let sp = builder.ins().get_stack_pointer(types::I64);
+    let lim = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), st, STATE_OFF_STACK_LIMIT);
+    let over = builder.ins().icmp(IntCC::UnsignedLessThan, sp, lim);
+    trap_if(&mut builder, over, trap_blk);
+
+    let has_self_tail = plan
+        .callees
+        .iter()
+        .any(|(pc, name)| cell.instructions[*pc].op == OpCode::TailCall && name == &cell.name);
+    let loop_blk: Option<Block> = if has_self_tail {
+        let b = builder.create_block();
+        builder.ins().jump(b, &[]);
+        builder.switch_to_block(b);
+        Some(b)
+    } else {
+        None
+    };
+
+    // Basic-block leaders among reachable instructions.
+    let mut leaders: BTreeSet<usize> = BTreeSet::new();
+    for (pc, inst) in cell.instructions.iter().enumerate() {
+        if !plan.reachable[pc] {
+            continue;
+        }
+        match inst.op {
+            OpCode::Jmp | OpCode::Break | OpCode::Continue => {
+                leaders.insert((pc as i64 + 1 + inst.sax_val() as i64) as usize);
+            }
+            OpCode::Test => {
+                leaders.insert(pc + 1);
+                leaders.insert(pc + 2);
+            }
+            OpCode::LoadBool if inst.c != 0 => {
+                leaders.insert(pc + 2);
+            }
+            _ => {}
+        }
+    }
+    let blocks: HashMap<usize, Block> = leaders
+        .iter()
+        .map(|&pc| (pc, builder.create_block()))
+        .collect();
+
+    let mut terminated = false;
+    for (pc, inst) in cell.instructions.iter().enumerate() {
+        if !plan.reachable[pc] {
+            continue;
+        }
+        if let Some(&blk) = blocks.get(&pc) {
+            if !terminated {
+                builder.ins().jump(blk, &[]);
+            }
+            builder.switch_to_block(blk);
+            terminated = false;
+        }
+        debug_assert!(
+            !terminated,
+            "reachable pc {pc} follows a terminator without a block"
+        );
+
+        let use_v = |b: &mut FunctionBuilder, r: u8| b.use_var(vars[r as usize]);
+        match inst.op {
+            OpCode::Nop => {}
+            OpCode::LoadK => {
+                let v = match &cell.constants[inst.bx() as usize] {
+                    Constant::Int(n) => *n,
+                    Constant::Bool(x) => *x as i64,
+                    // Callee-name placeholder; never read as a value.
+                    _ => 0,
+                };
+                let c = builder.ins().iconst(types::I64, v);
+                builder.def_var(vars[inst.a as usize], c);
+            }
+            OpCode::LoadBool => {
+                let c = builder.ins().iconst(types::I64, (inst.b != 0) as i64);
+                builder.def_var(vars[inst.a as usize], c);
+                if inst.c != 0 {
+                    builder.ins().jump(blocks[&(pc + 2)], &[]);
+                    terminated = true;
+                }
+            }
+            OpCode::LoadInt => {
+                let c = builder.ins().iconst(types::I64, inst.sbx() as i64);
+                builder.def_var(vars[inst.a as usize], c);
+            }
+            OpCode::Move | OpCode::MoveOwn => {
+                let v = use_v(&mut builder, inst.b);
+                builder.def_var(vars[inst.a as usize], v);
+            }
+            OpCode::Add | OpCode::Sub | OpCode::Mul => {
+                let l = use_v(&mut builder, inst.b);
+                let r = use_v(&mut builder, inst.c);
+                let (res, of) = match inst.op {
+                    OpCode::Add => builder.ins().sadd_overflow(l, r),
+                    OpCode::Sub => builder.ins().ssub_overflow(l, r),
+                    _ => builder.ins().smul_overflow(l, r),
+                };
+                trap_if(&mut builder, of, trap_blk);
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::Neg => {
+                let x = use_v(&mut builder, inst.b);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let (res, of) = builder.ins().ssub_overflow(zero, x);
+                trap_if(&mut builder, of, trap_blk);
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::Div | OpCode::Mod | OpCode::FloorDiv => {
+                let l = use_v(&mut builder, inst.b);
+                let r = use_v(&mut builder, inst.c);
+                // Division by zero and i64::MIN / -1 are decided by the interpreter.
+                let is_zero = builder.ins().icmp_imm(IntCC::Equal, r, 0);
+                let is_m1 = builder.ins().icmp_imm(IntCC::Equal, r, -1);
+                let is_min = builder.ins().icmp_imm(IntCC::Equal, l, i64::MIN);
+                let ovf = builder.ins().band(is_m1, is_min);
+                let bad = builder.ins().bor(is_zero, ovf);
+                trap_if(&mut builder, bad, trap_blk);
+                let res = match inst.op {
+                    // Truncating division, like `checked_div`.
+                    OpCode::Div => builder.ins().sdiv(l, r),
+                    // `rem_euclid`: remainder is always >= 0.
+                    OpCode::Mod => {
+                        let rem = builder.ins().srem(l, r);
+                        let rem_neg = builder.ins().icmp_imm(IntCC::SignedLessThan, rem, 0);
+                        let r_neg = builder.ins().icmp_imm(IntCC::SignedLessThan, r, 0);
+                        let up = builder.ins().iadd(rem, r);
+                        let down = builder.ins().isub(rem, r);
+                        let fixed = builder.ins().select(r_neg, down, up);
+                        builder.ins().select(rem_neg, fixed, rem)
+                    }
+                    // `div_euclid`.
+                    _ => {
+                        let q = builder.ins().sdiv(l, r);
+                        let rem = builder.ins().srem(l, r);
+                        let rem_neg = builder.ins().icmp_imm(IntCC::SignedLessThan, rem, 0);
+                        let r_neg = builder.ins().icmp_imm(IntCC::SignedLessThan, r, 0);
+                        let plus = builder.ins().iadd_imm(q, 1);
+                        let minus = builder.ins().iadd_imm(q, -1);
+                        let fixed = builder.ins().select(r_neg, plus, minus);
+                        builder.ins().select(rem_neg, fixed, q)
+                    }
+                };
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::Pow => {
+                let l = use_v(&mut builder, inst.b);
+                let r = use_v(&mut builder, inst.c);
+                let st = builder.ins().iconst(types::I64, state_addr);
+                let call = builder.ins().call(pow_ref, &[l, r, st]);
+                let res = builder.inst_results(call)[0];
+                trap_if_flagged(&mut builder, state_addr, trap_blk);
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::BitOr | OpCode::BitAnd | OpCode::BitXor => {
+                let l = use_v(&mut builder, inst.b);
+                let r = use_v(&mut builder, inst.c);
+                let res = match inst.op {
+                    OpCode::BitOr => builder.ins().bor(l, r),
+                    OpCode::BitAnd => builder.ins().band(l, r),
+                    _ => builder.ins().bxor(l, r),
+                };
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::BitNot => {
+                let x = use_v(&mut builder, inst.b);
+                let res = builder.ins().bnot(x);
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::Shl | OpCode::Shr => {
+                let l = use_v(&mut builder, inst.b);
+                let r = use_v(&mut builder, inst.c);
+                // Amount must be in 0..=63 (unsigned compare also catches negatives).
+                let bad = builder.ins().icmp_imm(IntCC::UnsignedGreaterThan, r, 63);
+                trap_if(&mut builder, bad, trap_blk);
+                let res = if inst.op == OpCode::Shl {
+                    builder.ins().ishl(l, r)
+                } else {
+                    builder.ins().sshr(l, r)
+                };
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::Eq | OpCode::Lt | OpCode::Le => {
+                let l = use_v(&mut builder, inst.b);
+                let r = use_v(&mut builder, inst.c);
+                let cc = match inst.op {
+                    OpCode::Eq => IntCC::Equal,
+                    OpCode::Lt => IntCC::SignedLessThan,
+                    _ => IntCC::SignedLessThanOrEqual,
+                };
+                let cmp = builder.ins().icmp(cc, l, r);
+                let res = builder.ins().uextend(types::I64, cmp);
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::Not => {
+                let x = use_v(&mut builder, inst.b);
+                let z = builder.ins().icmp_imm(IntCC::Equal, x, 0);
+                let res = builder.ins().uextend(types::I64, z);
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::And | OpCode::Or => {
+                let l = use_v(&mut builder, inst.b);
+                let r = use_v(&mut builder, inst.c);
+                let lt = builder.ins().icmp_imm(IntCC::NotEqual, l, 0);
+                let rt = builder.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                let both = if inst.op == OpCode::And {
+                    builder.ins().band(lt, rt)
+                } else {
+                    builder.ins().bor(lt, rt)
+                };
+                let res = builder.ins().uextend(types::I64, both);
+                builder.def_var(vars[inst.a as usize], res);
+            }
+            OpCode::Test => {
+                // Skip the next instruction when truthiness != (c != 0).
+                let x = use_v(&mut builder, inst.a);
+                let truthy = builder.ins().icmp_imm(IntCC::NotEqual, x, 0);
+                let (next, skip) = (blocks[&(pc + 1)], blocks[&(pc + 2)]);
+                if inst.c != 0 {
+                    builder.ins().brif(truthy, next, &[], skip, &[]);
+                } else {
+                    builder.ins().brif(truthy, skip, &[], next, &[]);
+                }
+                terminated = true;
+            }
+            OpCode::Jmp | OpCode::Break | OpCode::Continue => {
+                let target = (pc as i64 + 1 + inst.sax_val() as i64) as usize;
+                builder.ins().jump(blocks[&target], &[]);
+                terminated = true;
+            }
+            OpCode::Return => {
+                let v = use_v(&mut builder, inst.a);
+                builder.ins().return_(&[v]);
+                terminated = true;
+            }
+            OpCode::Call | OpCode::TailCall => {
+                let name = &plan.callees[&pc];
+                let base = inst.a;
+                let nargs = inst.b as usize;
+                let mut args: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(nargs);
+                for i in 0..nargs {
+                    args.push(use_v(&mut builder, base + 1 + i as u8));
+                }
+                if inst.op == OpCode::TailCall && name == &cell.name {
+                    // Self tail call: rebind the parameters and loop.
+                    for (i, v) in args.iter().enumerate() {
+                        builder.def_var(vars[i], *v);
+                    }
+                    builder.ins().jump(loop_blk.expect("loop block"), &[]);
+                    terminated = true;
+                } else {
+                    let call = builder.ins().call(callee_refs[name], &args);
+                    let res = builder.inst_results(call)[0];
+                    trap_if_flagged(&mut builder, state_addr, trap_blk);
+                    if inst.op == OpCode::TailCall {
+                        builder.ins().return_(&[res]);
+                        terminated = true;
+                    } else {
+                        builder.def_var(vars[base as usize], res);
+                    }
+                }
+            }
+            other => {
+                return Err(CodegenError::LoweringError(format!(
+                    "strict JIT: unexpected opcode {other:?} in '{}'",
+                    cell.name
+                )));
+            }
+        }
+    }
+    debug_assert!(
+        terminated,
+        "strict JIT: cell '{}' falls off the end",
+        cell.name
+    );
+
+    // Shared trap exit: raise the flag and return 0; callers check the flag.
+    builder.switch_to_block(trap_blk);
+    let st = builder.ins().iconst(types::I64, state_addr);
+    let one = builder.ins().iconst(types::I64, 1);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), one, st, STATE_OFF_TRAP);
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().return_(&[zero]);
+
+    builder.seal_all_blocks();
+    builder.finalize();
+
+    let mut ctx = Context::for_function(func);
+    module
+        .define_function(func_id, &mut ctx)
+        .map_err(|e| CodegenError::LoweringError(format!("define_function({}): {e}", cell.name)))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Variable helpers
 // ---------------------------------------------------------------------------
 
@@ -2206,16 +2745,16 @@ mod tests {
             registers: 5,
             constants: vec![],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 1, 1, 0), // 0: r1 = 1
-                Instruction::abc(OpCode::LoadInt, 2, 1, 0), // 1: r2 = 1
-                Instruction::abc(OpCode::LoadInt, 3, 0, 0), // 2: r3 = 0
-                Instruction::abc(OpCode::Lt, 4, 3, 0),      // 3: r4 = 0 < n
-                Instruction::abc(OpCode::Test, 4, 0, 0),    // 4: test
-                Instruction::sax(OpCode::Jmp, 3),           // 5: -> 9 (exit)
-                Instruction::abc(OpCode::Mul, 1, 1, 0),     // 6: r1 *= n
-                Instruction::abc(OpCode::Sub, 0, 0, 2),     // 7: n -= 1
-                Instruction::sax(OpCode::Jmp, -6),          // 8: -> 3 (loop)
-                Instruction::abc(OpCode::Return, 1, 1, 0),  // 9: return r1
+                Instruction::abx(OpCode::LoadInt, 1, 1),   // 0: r1 = 1
+                Instruction::abx(OpCode::LoadInt, 2, 1),   // 1: r2 = 1
+                Instruction::abx(OpCode::LoadInt, 3, 0),   // 2: r3 = 0
+                Instruction::abc(OpCode::Lt, 4, 3, 0),     // 3: r4 = 0 < n
+                Instruction::abc(OpCode::Test, 4, 0, 0),   // 4: test
+                Instruction::sax(OpCode::Jmp, 3),          // 5: -> 9 (exit)
+                Instruction::abc(OpCode::Mul, 1, 1, 0),    // 6: r1 *= n
+                Instruction::abc(OpCode::Sub, 0, 0, 2),    // 7: n -= 1
+                Instruction::sax(OpCode::Jmp, -6),         // 8: -> 3 (loop)
+                Instruction::abc(OpCode::Return, 1, 1, 0), // 9: return r1
             ],
             effect_handler_metas: Vec::new(),
         }]);
@@ -2278,13 +2817,13 @@ mod tests {
             registers: 9,
             constants: vec![Constant::String("fib_acc".to_string())],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 3, 0, 0),  // 0: r3 = 0
+                Instruction::abx(OpCode::LoadInt, 3, 0),     // 0: r3 = 0
                 Instruction::abc(OpCode::Le, 4, 0, 3),       // 1: r4 = n <= 0
                 Instruction::abc(OpCode::Test, 4, 0, 0),     // 2: test
                 Instruction::sax(OpCode::Jmp, 1),            // 3: -> 5
                 Instruction::abc(OpCode::Return, 1, 1, 0),   // 4: return a
                 Instruction::abx(OpCode::LoadK, 5, 0),       // 5: r5 = "fib_acc"
-                Instruction::abc(OpCode::LoadInt, 8, 1, 0),  // 6: r8 = 1
+                Instruction::abx(OpCode::LoadInt, 8, 1),     // 6: r8 = 1
                 Instruction::abc(OpCode::Sub, 6, 0, 8),      // 7: r6 = n - 1
                 Instruction::abc(OpCode::Move, 7, 2, 0),     // 8: r7 = b
                 Instruction::abc(OpCode::Add, 8, 1, 2),      // 9: r8 = a + b
@@ -2453,14 +2992,14 @@ mod tests {
             registers: 4,
             constants: vec![],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 1, 0, 0),   // 0: r1 = 0
-                Instruction::abc(OpCode::Lt, 2, 1, 0),        // 1: r2 = 0 < x
-                Instruction::abc(OpCode::Test, 2, 0, 0),      // 2: test
-                Instruction::sax(OpCode::Jmp, 2),             // 3: -> 6 (else)
-                Instruction::abc(OpCode::LoadInt, 3, 100, 0), // 4: r3 = 100
-                Instruction::sax(OpCode::Jmp, 1),             // 5: -> 7 (end)
-                Instruction::abc(OpCode::LoadInt, 3, 50, 0),  // 6: r3 = 50
-                Instruction::abc(OpCode::Return, 3, 1, 0),    // 7: return r3
+                Instruction::abx(OpCode::LoadInt, 1, 0),   // 0: r1 = 0
+                Instruction::abc(OpCode::Lt, 2, 1, 0),     // 1: r2 = 0 < x
+                Instruction::abc(OpCode::Test, 2, 0, 0),   // 2: test
+                Instruction::sax(OpCode::Jmp, 2),          // 3: -> 6 (else)
+                Instruction::abx(OpCode::LoadInt, 3, 100), // 4: r3 = 100
+                Instruction::sax(OpCode::Jmp, 1),          // 5: -> 7 (end)
+                Instruction::abx(OpCode::LoadInt, 3, 50),  // 6: r3 = 50
+                Instruction::abc(OpCode::Return, 3, 1, 0), // 7: return r3
             ],
             effect_handler_metas: Vec::new(),
         }]);
@@ -2564,7 +3103,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         assert!(
@@ -2611,7 +3150,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("concat").expect("execute");
@@ -2644,7 +3183,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("double_str").expect("execute");
@@ -2683,7 +3222,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let result = engine.execute_jit_nullary("eq_test").expect("execute");
@@ -2716,7 +3255,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let result = engine.execute_jit_nullary("neq_test").expect("execute");
@@ -2749,7 +3288,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let result = engine.execute_jit_nullary("lt_test").expect("execute");
@@ -2778,7 +3317,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let result = engine.execute_jit_nullary("lt_rev").expect("execute");
@@ -2807,7 +3346,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let result = engine.execute_jit_nullary("le_eq").expect("execute");
@@ -2839,7 +3378,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("clone_str").expect("execute");
@@ -2879,7 +3418,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("overwrite").expect("execute");
@@ -2929,24 +3468,24 @@ mod tests {
                 Constant::String("x".to_string()),
             ],
             instructions: vec![
-                Instruction::abx(OpCode::LoadK, 0, 0),      // 0: r0 = ""
-                Instruction::abx(OpCode::LoadK, 1, 1),      // 1: r1 = "x"
-                Instruction::abc(OpCode::LoadInt, 2, 3, 0), // 2: r2 = 3
-                Instruction::abc(OpCode::LoadInt, 3, 0, 0), // 3: r3 = 0
-                Instruction::abc(OpCode::LoadInt, 4, 1, 0), // 4: r4 = 1
-                Instruction::abc(OpCode::Lt, 5, 3, 2),      // 5: r5 = 0 < counter
-                Instruction::abc(OpCode::Test, 5, 0, 0),    // 6: test
-                Instruction::sax(OpCode::Jmp, 3),           // 7: -> 11 (end)
-                Instruction::abc(OpCode::Add, 0, 0, 1),     // 8: r0 = r0 + r1
-                Instruction::abc(OpCode::Sub, 2, 2, 4),     // 9: r2 -= 1
-                Instruction::sax(OpCode::Jmp, -6),          // 10: -> 5 (loop)
-                Instruction::abc(OpCode::Return, 0, 1, 0),  // 11: return r0
+                Instruction::abx(OpCode::LoadK, 0, 0),     // 0: r0 = ""
+                Instruction::abx(OpCode::LoadK, 1, 1),     // 1: r1 = "x"
+                Instruction::abx(OpCode::LoadInt, 2, 3),   // 2: r2 = 3
+                Instruction::abx(OpCode::LoadInt, 3, 0),   // 3: r3 = 0
+                Instruction::abx(OpCode::LoadInt, 4, 1),   // 4: r4 = 1
+                Instruction::abc(OpCode::Lt, 5, 3, 2),     // 5: r5 = 0 < counter
+                Instruction::abc(OpCode::Test, 5, 0, 0),   // 6: test
+                Instruction::sax(OpCode::Jmp, 3),          // 7: -> 11 (end)
+                Instruction::abc(OpCode::Add, 0, 0, 1),    // 8: r0 = r0 + r1
+                Instruction::abc(OpCode::Sub, 2, 2, 4),    // 9: r2 -= 1
+                Instruction::sax(OpCode::Jmp, -6),         // 10: -> 5 (loop)
+                Instruction::abc(OpCode::Return, 0, 1, 0), // 11: return r0
             ],
             effect_handler_metas: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("build").expect("execute");
@@ -2982,20 +3521,20 @@ mod tests {
                 Constant::String("non-positive".to_string()),
             ],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 1, 0, 0), // 0: r1 = 0
-                Instruction::abc(OpCode::Lt, 2, 1, 0),      // 1: r2 = 0 < x
-                Instruction::abc(OpCode::Test, 2, 0, 0),    // 2: test
-                Instruction::sax(OpCode::Jmp, 2),           // 3: -> 6 (else)
-                Instruction::abx(OpCode::LoadK, 3, 0),      // 4: r3 = "positive"
-                Instruction::sax(OpCode::Jmp, 1),           // 5: -> 7 (end)
-                Instruction::abx(OpCode::LoadK, 3, 1),      // 6: r3 = "non-positive"
-                Instruction::abc(OpCode::Return, 3, 1, 0),  // 7: return r3
+                Instruction::abx(OpCode::LoadInt, 1, 0),   // 0: r1 = 0
+                Instruction::abc(OpCode::Lt, 2, 1, 0),     // 1: r2 = 0 < x
+                Instruction::abc(OpCode::Test, 2, 0, 0),   // 2: test
+                Instruction::sax(OpCode::Jmp, 2),          // 3: -> 6 (else)
+                Instruction::abx(OpCode::LoadK, 3, 0),     // 4: r3 = "positive"
+                Instruction::sax(OpCode::Jmp, 1),          // 5: -> 7 (end)
+                Instruction::abx(OpCode::LoadK, 3, 1),     // 6: r3 = "non-positive"
+                Instruction::abc(OpCode::Return, 3, 1, 0), // 7: return r3
             ],
             effect_handler_metas: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         assert!(engine.returns_string("pick"));
@@ -3030,7 +3569,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("empty").expect("execute");
@@ -3069,7 +3608,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("three_way").expect("execute");
@@ -3109,16 +3648,16 @@ mod tests {
                 Instruction::abc(OpCode::Eq, 2, 0, 1),
                 Instruction::abc(OpCode::Test, 2, 0, 0),
                 Instruction::sax(OpCode::Jmp, 2),
-                Instruction::abc(OpCode::LoadInt, 3, 100, 0),
+                Instruction::abx(OpCode::LoadInt, 3, 100),
                 Instruction::sax(OpCode::Jmp, 1),
-                Instruction::abc(OpCode::LoadInt, 3, 50, 0),
+                Instruction::abx(OpCode::LoadInt, 3, 50),
                 Instruction::abc(OpCode::Return, 3, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let result = engine.execute_jit_nullary("is_hello").expect("execute");
@@ -3157,7 +3696,7 @@ mod tests {
         ]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         assert!(engine.returns_string("str_cell"));
@@ -3185,7 +3724,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine.execute_jit_nullary("transfer").expect("execute");
@@ -3225,7 +3764,7 @@ mod tests {
         }]);
 
         let settings = CodegenSettings::default();
-        let mut engine = JitEngine::new(settings, 0);
+        let mut engine = JitEngine::new(settings, 0).with_experimental_types(true);
         engine.compile_module(&lir).expect("compile");
 
         let raw = engine
@@ -3233,5 +3772,188 @@ mod tests {
             .expect("execute");
         let s = unsafe { jit_take_string(raw) };
         assert_eq!(s, "hello world");
+    }
+
+    // --- Strict tier: interpreter-equivalence guards -----------------------
+
+    fn int_cell(
+        name: &str,
+        nparams: usize,
+        regs: u16,
+        consts: Vec<Constant>,
+        ins: Vec<Instruction>,
+    ) -> LirCell {
+        LirCell {
+            name: name.to_string(),
+            params: (0..nparams)
+                .map(|i| crate::compiler::lir::LirParam {
+                    name: format!("p{i}"),
+                    ty: "Int".to_string(),
+                    register: i as u8,
+                    variadic: false,
+                })
+                .collect(),
+            returns: Some("Int".to_string()),
+            registers: regs,
+            constants: consts,
+            instructions: ins,
+            effect_handler_metas: Vec::new(),
+        }
+    }
+
+    fn binop_cell(op: OpCode) -> LirCell {
+        int_cell(
+            "f",
+            2,
+            3,
+            vec![],
+            vec![
+                Instruction::abc(op, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+        )
+    }
+
+    #[test]
+    fn strict_int_ops_trap_instead_of_wrapping_or_crashing() {
+        for (op, a, b) in [
+            (OpCode::Add, i64::MAX, 1),
+            (OpCode::Sub, i64::MIN, 1),
+            (OpCode::Mul, i64::MAX, 2),
+            (OpCode::Div, 7, 0),
+            (OpCode::Div, i64::MIN, -1),
+            (OpCode::Mod, 7, 0),
+            (OpCode::Mod, i64::MIN, -1),
+            (OpCode::FloorDiv, 7, 0),
+            (OpCode::Pow, 2, 70),
+            (OpCode::Pow, 2, -1),
+            (OpCode::Shl, 1, 64),
+            (OpCode::Shr, 1, -1),
+        ] {
+            let lir = make_module_with_cells(vec![binop_cell(op)]);
+            let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+            engine.compile_module(&lir).unwrap();
+            assert!(engine.is_compiled("f"), "{op:?} should compile");
+            assert!(
+                matches!(engine.execute_jit("f", &[a, b]), Err(JitError::Trap)),
+                "{op:?}({a}, {b}) must trap so the interpreter decides"
+            );
+            // The engine stays usable after a trap (the flag is reset per call).
+            assert!(engine.execute_jit("f", &[2, 1]).is_ok(), "{op:?}");
+        }
+    }
+
+    #[test]
+    fn strict_mod_and_floordiv_match_euclidean_semantics() {
+        for (op, a, b, want) in [
+            (OpCode::Mod, -7, 2, 1),
+            (OpCode::Mod, 7, -2, 1),
+            (OpCode::Mod, -7, -2, 1),
+            (OpCode::Mod, 7, 2, 1),
+            (OpCode::FloorDiv, -7, 2, -4),
+            (OpCode::FloorDiv, 7, -2, -3),
+            (OpCode::FloorDiv, -7, -2, 4),
+            (OpCode::FloorDiv, 7, 2, 3),
+            (OpCode::Div, -7, 2, -3),
+        ] {
+            let lir = make_module_with_cells(vec![binop_cell(op)]);
+            let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+            engine.compile_module(&lir).unwrap();
+            assert_eq!(
+                engine.execute_jit("f", &[a, b]).unwrap(),
+                want,
+                "{op:?}({a},{b})"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_tier_refuses_cells_with_uncompiled_callees() {
+        // caller() calls a name that is not a compiled cell; the old JIT returned 0.
+        let caller = int_cell(
+            "caller",
+            0,
+            2,
+            vec![Constant::String("print".to_string())],
+            vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Call, 0, 0, 1),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+        );
+        let lir = make_module_with_cells(vec![caller]);
+        let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+        engine.compile_module(&lir).unwrap();
+        assert!(!engine.is_compiled("caller"));
+    }
+
+    #[test]
+    fn strict_tier_refuses_float_and_untyped_cells() {
+        let mut fl = int_cell(
+            "fl",
+            0,
+            2,
+            vec![Constant::Float(1.5)],
+            vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+        );
+        fl.returns = Some("Float".to_string());
+        let mut untyped = binop_cell(OpCode::Add);
+        untyped.name = "untyped".to_string();
+        untyped.returns = None;
+        let lir = make_module_with_cells(vec![fl, untyped]);
+        let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+        engine.compile_module(&lir).unwrap();
+        assert!(!engine.is_compiled("fl"));
+        assert!(!engine.is_compiled("untyped"));
+    }
+
+    #[test]
+    fn strict_tier_bool_return_kind() {
+        let mut p = int_cell(
+            "lt",
+            2,
+            3,
+            vec![],
+            vec![
+                Instruction::abc(OpCode::Lt, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+        );
+        p.returns = Some("Bool".to_string());
+        let lir = make_module_with_cells(vec![p]);
+        let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+        engine.compile_module(&lir).unwrap();
+        assert_eq!(engine.return_kind("lt"), Some(JitReturn::Bool));
+        assert_eq!(engine.execute_jit("lt", &[1, 2]).unwrap(), 1);
+        assert_eq!(engine.execute_jit("lt", &[2, 1]).unwrap(), 0);
+    }
+
+    #[test]
+    fn strict_tier_stack_guard_traps_runaway_recursion() {
+        // f(n) = 1 + f(n + 1)  -- never terminates; must trap, not overflow the stack.
+        let f = int_cell(
+            "f",
+            1,
+            6,
+            vec![Constant::String("f".to_string()), Constant::Int(1)],
+            vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),
+                Instruction::abx(OpCode::LoadK, 3, 1),
+                Instruction::abc(OpCode::Add, 2, 0, 3),
+                Instruction::abc(OpCode::Move, 2, 2, 0),
+                Instruction::abc(OpCode::Call, 1, 1, 1),
+                Instruction::abx(OpCode::LoadK, 4, 1),
+                Instruction::abc(OpCode::Add, 5, 4, 1),
+                Instruction::abc(OpCode::Return, 5, 1, 0),
+            ],
+        );
+        let lir = make_module_with_cells(vec![f]);
+        let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+        engine.compile_module(&lir).unwrap();
+        assert!(engine.is_compiled("f"));
+        assert!(matches!(engine.execute_jit("f", &[0]), Err(JitError::Trap)));
     }
 }

@@ -1,0 +1,7 @@
+cell addc(a: Int, b: Int) -> Int
+  return a + b
+end
+cell main() -> Int
+  print(addc(1, 2))
+  return addc(9223372036854775807, 1)
+end

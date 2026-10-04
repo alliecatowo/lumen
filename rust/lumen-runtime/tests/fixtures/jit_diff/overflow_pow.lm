@@ -1,0 +1,7 @@
+cell pw(a: Int, b: Int) -> Int
+  return a ** b
+end
+cell main() -> Int
+  print(pw(2, 10))
+  return pw(2, 70)
+end

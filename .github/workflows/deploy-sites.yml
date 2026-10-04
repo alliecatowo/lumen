@@ -1,0 +1,85 @@
+name: Deploy Sites
+
+# lumen-lang.com is the Cloudflare Pages project `lumen-docs` (the VitePress docs
+# in docs/); wares.lumen-lang.com is the Cloudflare Pages project `wares` (the Nuxt
+# app in wares-site/). Both deploy only when CLOUDFLARE_API_TOKEN is configured as a
+# secret of the `workers-deploy` environment; otherwise the jobs skip with a notice.
+# The GitHub Pages mirror of the docs is built by pages.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'wares-site/**'
+      - 'rust/lumen-wasm/**'
+      - '.github/workflows/deploy-sites.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-sites
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Docs -> lumen-lang.com
+    runs-on: ubuntu-latest
+    environment: workers-deploy
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DOCS_BASE: /
+    steps:
+      - name: Skip notice
+        if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
+        run: echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the lumen-lang.com deploy"
+      - uses: actions/checkout@v7
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+      - uses: jetli/wasm-pack-action@v0.4.0
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+      - name: Build lumen-wasm for the playground
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        run: wasm-pack build rust/lumen-wasm --target web --release --out-dir ../../docs/public/wasm
+      - uses: actions/setup-node@v7
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Build docs
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        run: npm ci && npm run docs:build
+        working-directory: docs
+      - name: Deploy
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        run: npx --yes wrangler@4 pages deploy docs/.vitepress/dist --project-name lumen-docs --branch main
+
+  wares:
+    name: Wares UI -> wares.lumen-lang.com
+    runs-on: ubuntu-latest
+    environment: workers-deploy
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Skip notice
+        if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
+        run: echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the wares.lumen-lang.com deploy"
+      - uses: actions/checkout@v7
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+      - uses: actions/setup-node@v7
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: wares-site/package-lock.json
+      - name: Build
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        run: npm ci && npm run generate
+        working-directory: wares-site
+      - name: Deploy
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        run: npx --yes wrangler@4 pages deploy .output/public --project-name wares --branch main
+        working-directory: wares-site

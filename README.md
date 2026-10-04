@@ -340,6 +340,20 @@ lumen/
 └── CLAUDE.md              # AI assistant instructions
 ```
 
+## Site hosting
+
+| Site | Source | Served from | Deployed by |
+|------|--------|-------------|-------------|
+| lumen-lang.com (docs) | `docs/` (VitePress) | Cloudflare Pages project `lumen-docs` | `deploy-sites.yml` |
+| wares.lumen-lang.com (package registry UI) | `wares-site/` (Nuxt) | Cloudflare Pages project `wares` | `deploy-sites.yml` |
+| wares.lumen-lang.com/api/* | `workers/registry` | Cloudflare Worker | `deploy-workers.yml` |
+| alliecatowo.github.io/lumen (docs mirror) | `docs/` | GitHub Pages | `pages.yml` |
+
+Docs live on GitHub Pages as a mirror and on Cloudflare Pages under the custom domain; the wares UI is
+Cloudflare-only. Only `pages.yml` deploys to GitHub Pages (a second workflow used to publish a different site
+into the same Pages slot). Cloudflare deploys run when `CLOUDFLARE_API_TOKEN` is set in the `workers-deploy`
+environment and skip with a notice otherwise.
+
 ## Contributing
 
 We welcome contributions! Please see:

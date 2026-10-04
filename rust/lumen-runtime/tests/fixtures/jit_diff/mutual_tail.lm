@@ -1,0 +1,24 @@
+cell is_even(n: Int) -> Bool
+  if n == 0
+    return true
+  end
+  return is_odd(n - 1)
+end
+cell is_odd(n: Int) -> Bool
+  if n == 0
+    return false
+  end
+  return is_even(n - 1)
+end
+cell count(n: Int, acc: Int) -> Int
+  if n == 0
+    return acc
+  end
+  return count(n - 1, acc + n)
+end
+cell main() -> Int
+  print(is_even(10))
+  print(is_even(100001))
+  print(count(1000000, 0))
+  return count(10, 0)
+end

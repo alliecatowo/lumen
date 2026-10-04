@@ -1,0 +1,7 @@
+cell dv(a: Int, b: Int) -> Int
+  return a / b
+end
+cell main() -> Int
+  let m = -9223372036854775807 - 1
+  return dv(m, -1)
+end

@@ -1,0 +1,7 @@
+cell md(a: Int, b: Int) -> Int
+  return a % b
+end
+cell main() -> Int
+  print(md(10, 3))
+  return md(10, 0)
+end

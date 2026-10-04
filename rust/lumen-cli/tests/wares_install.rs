@@ -266,7 +266,10 @@ fn the_default_registry_is_not_the_website() {
     // `search` talks to the registry; with LUMEN_REGISTRY unset the default is used,
     // so just assert the compiled-in default targets the worker API.
     assert!(lumen_cli::config::DEFAULT_REGISTRY_URL.ends_with("/api/v1"));
-    assert!(!lumen_cli::config::DEFAULT_REGISTRY_URL.contains("lumen-lang.com"));
+    // The worker is routed at /api/* on the wares host; the bare host is the website.
+    assert!(
+        lumen_cli::config::DEFAULT_REGISTRY_URL.starts_with("https://wares.lumen-lang.com/api/")
+    );
 }
 
 #[test]

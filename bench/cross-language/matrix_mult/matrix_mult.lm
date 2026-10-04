@@ -66,6 +66,6 @@ cell main() -> Null
     i = i + 1
   end
 
-  print("matrix_mult(200): checksum = " + to_string(checksum))
+  print("matrix_mult(200): checksum = " + to_string(round(checksum * 1000000.0) / 1000000.0))
   return null
 end

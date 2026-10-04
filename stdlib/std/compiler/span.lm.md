@@ -8,7 +8,7 @@ and reporting compiler diagnostics.
 
 # Byte-level span in source text.
 # start/end_pos are byte offsets; line/col are 1-based.
-record Span(
+pub record Span(
   file: String,
   start: Int,
   end_pos: Int,
@@ -17,12 +17,12 @@ record Span(
 )
 
 # Create a dummy span (used in generated/synthetic nodes).
-cell dummy_span() -> Span
+pub cell dummy_span() -> Span
   return Span(file: "", start: 0, end_pos: 0, start_line: 0, start_col: 0)
 end
 
 # Merge two spans into the smallest span covering both.
-cell merge_spans(a: Span, b: Span) -> Span
+pub cell merge_spans(a: Span, b: Span) -> Span
   let start = min(a.start, b.start)
   let end_pos = max(a.end_pos, b.end_pos)
   let line = min(a.start_line, b.start_line)
@@ -38,7 +38,7 @@ end
 # ── Source file ──────────────────────────────────────────────────
 
 # A loaded source file with its content and line-start offsets.
-record Source(
+pub record Source(
   filename: String,
   content: String,
   lines: list[Int]
@@ -46,7 +46,7 @@ record Source(
 
 # Build a Source from filename and raw content string.
 # Populates the line-start offset table.
-cell make_source(filename: String, content: String) -> Source
+pub cell make_source(filename: String, content: String) -> Source
   let lines = [0]
   for i in range(0, length(content)) if slice(content, i, i + 1) == "\n"
     lines = append(lines, i + 1)
@@ -56,7 +56,7 @@ end
 
 # ── Diagnostics ──────────────────────────────────────────────────
 
-enum DiagnosticLevel
+pub enum DiagnosticLevel
   Error
   Warning
   Note
@@ -64,7 +64,7 @@ enum DiagnosticLevel
 end
 
 # A single compiler diagnostic with location, message, and optional notes.
-record Diagnostic(
+pub record Diagnostic(
   level: DiagnosticLevel,
   message: String,
   span: Span,
@@ -72,7 +72,7 @@ record Diagnostic(
 )
 
 # Format a diagnostic as a human-readable string.
-cell format_diagnostic(diag: Diagnostic, src: Source) -> String
+pub cell format_diagnostic(diag: Diagnostic, src: Source) -> String
   let prefix = match diag.level
     case Error -> "error"
     case Warning -> "warning"
@@ -91,15 +91,15 @@ cell format_diagnostic(diag: Diagnostic, src: Source) -> String
 end
 
 # Convenience constructors for common diagnostic levels.
-cell error_at(span: Span, message: String) -> Diagnostic
+pub cell error_at(span: Span, message: String) -> Diagnostic
   return Diagnostic(level: Error, message: message, span: span, notes: [])
 end
 
-cell warning_at(span: Span, message: String) -> Diagnostic
+pub cell warning_at(span: Span, message: String) -> Diagnostic
   return Diagnostic(level: Warning, message: message, span: span, notes: [])
 end
 
-cell note_at(span: Span, message: String) -> Diagnostic
+pub cell note_at(span: Span, message: String) -> Diagnostic
   return Diagnostic(level: Note, message: message, span: span, notes: [])
 end
 ```

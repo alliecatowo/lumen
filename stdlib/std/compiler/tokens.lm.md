@@ -13,24 +13,24 @@ import std.compiler.span: Span
 # Lumen enum variants take at most one payload field.
 
 # Payload wrappers for literal variants
-record IntLitVal(value: Int)
-record FloatLitVal(value: Float)
-record StringLitVal(value: String)
-record BoolLitVal(value: Bool)
-record BytesLitVal(value: list[Int])
-record IdentVal(name: String)
-record DirectiveVal(name: String)
-record SymbolVal(ch: String)
+pub record IntLitVal(value: Int)
+pub record FloatLitVal(value: Float)
+pub record StringLitVal(value: String)
+pub record BoolLitVal(value: Bool)
+pub record BytesLitVal(value: list[Int])
+pub record IdentVal(name: String)
+pub record DirectiveVal(name: String)
+pub record SymbolVal(ch: String)
 
 # String interpolation segment: is_expr=true means expression hole
-record InterpSegment(
+pub record InterpSegment(
   is_expr: Bool,
   text: String,
   format_spec: String?
 )
-record StringInterpVal(segments: list[InterpSegment])
+pub record StringInterpVal(segments: list[InterpSegment])
 
-enum TokenKind
+pub enum TokenKind
   # ── Literals ────────────────────────────────────────────────
   IntLit(payload: IntLitVal)
   FloatLit(payload: FloatLitVal)
@@ -198,7 +198,7 @@ end
 
 # ── Token record ─────────────────────────────────────────────────
 
-record Token(
+pub record Token(
   kind: TokenKind,
   lexeme: String,
   span: Span
@@ -207,12 +207,12 @@ record Token(
 # ── Helper cells ─────────────────────────────────────────────────
 
 # Create a token at a given span.
-cell make_token(kind: TokenKind, lexeme: String, span: Span) -> Token
+pub cell make_token(kind: TokenKind, lexeme: String, span: Span) -> Token
   return Token(kind: kind, lexeme: lexeme, span: span)
 end
 
 # Check if a token is a keyword.
-cell is_keyword(tok: Token) -> Bool
+pub cell is_keyword(tok: Token) -> Bool
   return match tok.kind
     case KwRecord -> true
     case KwEnum -> true
@@ -290,7 +290,7 @@ cell is_keyword(tok: Token) -> Bool
 end
 
 # Check if a token is a literal.
-cell is_literal(tok: Token) -> Bool
+pub cell is_literal(tok: Token) -> Bool
   return match tok.kind
     case IntLit(_) -> true
     case FloatLit(_) -> true
@@ -305,7 +305,7 @@ cell is_literal(tok: Token) -> Bool
 end
 
 # Check if a token is an operator.
-cell is_operator(tok: Token) -> Bool
+pub cell is_operator(tok: Token) -> Bool
   return match tok.kind
     case Plus -> true
     case Minus -> true

@@ -512,6 +512,10 @@ pub struct TrustPolicy {
     /// Block install scripts by default
     #[serde(default = "default_true")]
     pub block_install_scripts: bool,
+    /// Registry CA public key (SPKI, base64). When set, the certificate's own CA
+    /// signature is verified client-side too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_public_key: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -538,6 +542,7 @@ impl TrustPolicy {
             min_package_age: Some("24h".to_string()),
             allowed_providers: vec!["github".to_string()],
             block_install_scripts: true,
+            ca_public_key: None,
         }
     }
 }

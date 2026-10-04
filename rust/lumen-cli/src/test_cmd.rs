@@ -326,7 +326,7 @@ mod tests {
         .expect("should write lumen.toml");
         fs::write(
             src_dir.join("math.lm"),
-            "cell add(a: Int, b: Int) -> Int\n  return a + b\nend\n",
+            "pub cell add(a: Int, b: Int) -> Int\n  return a + b\nend\n",
         )
         .expect("should write module");
         fs::write(

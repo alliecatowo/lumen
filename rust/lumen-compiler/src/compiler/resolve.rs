@@ -260,6 +260,14 @@ pub enum ResolveError {
     CircularImport { module: String, chain: String },
     #[error("module '{module}' not found at line {line}")]
     ModuleNotFound { module: String, line: usize },
+    #[error(
+        "'{symbol}' is private in module '{module}' (declare it `pub` to import it) at line {line}"
+    )]
+    PrivateImport {
+        symbol: String,
+        module: String,
+        line: usize,
+    },
     #[error("imported symbol '{symbol}' not found in module '{module}' at line {line}")]
     ImportedSymbolNotFound {
         symbol: String,
@@ -348,6 +356,19 @@ pub struct CellInfo {
     /// `true` for each parameter (aligned with `params`) that has a default
     /// value. May be shorter than `params`; missing entries mean "no default".
     pub param_defaults: Vec<bool>,
+    /// Declared `pub`: only public cells can be imported from another module.
+    pub is_pub: bool,
+}
+
+impl TypeInfo {
+    /// Whether the type may be imported from another module (`pub`; built-ins are public).
+    pub fn is_public(&self) -> bool {
+        match &self.kind {
+            TypeInfoKind::Builtin => true,
+            TypeInfoKind::Record(r) => r.is_pub,
+            TypeInfoKind::Enum(e) => e.is_pub,
+        }
+    }
 }
 
 /// Which of `params` have a default value.
@@ -616,6 +637,7 @@ fn register_local_defs_in_body(
                                 .collect(),
                             must_use: c.must_use,
                             param_defaults: param_default_mask(&c.params),
+                            is_pub: c.is_pub,
                         });
                     }
                 }
@@ -731,6 +753,7 @@ fn resolve_with_base_inner(
                         generic_params: c.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                         must_use: c.must_use,
                         param_defaults: param_default_mask(&c.params),
+                        is_pub: c.is_pub,
                     });
                 }
             },
@@ -800,6 +823,7 @@ fn resolve_with_base_inner(
                             generic_params: vec![],
                             must_use: false,
                             param_defaults: vec![],
+                            is_pub: true,
                         },
                     );
                 }
@@ -829,6 +853,7 @@ fn resolve_with_base_inner(
                                     .collect(),
                                 must_use: cell.must_use,
                                 param_defaults: param_default_mask(&cell.params),
+                                is_pub: cell.is_pub,
                             });
                         }
                     }
@@ -931,6 +956,7 @@ fn resolve_with_base_inner(
                             generic_params: vec![],
                             must_use: false,
                             param_defaults: vec![],
+                            is_pub: true,
                         },
                     );
                 }
@@ -951,6 +977,7 @@ fn resolve_with_base_inner(
                             .collect(),
                         must_use: cell.must_use,
                         param_defaults: param_default_mask(&cell.params),
+                        is_pub: cell.is_pub,
                     });
                 }
                 for g in &p.grants {
@@ -992,6 +1019,7 @@ fn resolve_with_base_inner(
                             .collect(),
                         must_use: false,
                         param_defaults: param_default_mask(&op.params),
+                        is_pub: op.is_pub,
                     });
                 }
             }
@@ -1037,6 +1065,7 @@ fn resolve_with_base_inner(
                             .collect(),
                         must_use: false,
                         param_defaults: param_default_mask(&handle.params),
+                        is_pub: handle.is_pub,
                     });
                 }
             }
@@ -1169,6 +1198,7 @@ fn resolve_with_base_inner(
                             generic_params: method_generic_params,
                             must_use: method.must_use,
                             param_defaults: param_default_mask(&method.params),
+                            is_pub: method.is_pub,
                         });
                     }
                 }

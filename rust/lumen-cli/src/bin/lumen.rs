@@ -124,6 +124,10 @@ enum Commands {
         /// Default is 0 meaning JIT is always attempted immediately.
         #[arg(long, default_value = "0")]
         jit_threshold: u32,
+
+        /// Disable the JIT and run everything in the interpreter (same as LUMEN_JIT=0).
+        #[arg(long)]
+        no_jit: bool,
     },
     /// Compile a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file to LIR JSON
     Emit {
@@ -489,7 +493,15 @@ fn dispatch_command(command: Commands) {
             trace_dir,
             allow_unstable,
             jit_threshold,
-        } => cmd_run(&file, &cell, trace_dir, allow_unstable, jit_threshold),
+            no_jit,
+        } => cmd_run(
+            &file,
+            &cell,
+            trace_dir,
+            allow_unstable,
+            jit_threshold,
+            no_jit,
+        ),
         Commands::Emit {
             file,
             output,
@@ -1193,6 +1205,7 @@ fn cmd_run(
     trace_dir: Option<PathBuf>,
     allow_unstable: bool,
     jit_threshold: u32,
+    no_jit: bool,
 ) {
     let source = read_source(file);
     let filename = file.display().to_string();
@@ -1243,7 +1256,9 @@ fn cmd_run(
     // Enable tiered JIT: with --jit-threshold=0 (default), eligible cells are
     // compiled to native code on their very first call. Use a higher value to
     // defer compilation to only hot cells.
-    vm.enable_jit(jit_threshold as u64);
+    if !no_jit {
+        vm.enable_jit(jit_threshold as u64);
+    }
     if let Some(run_id) = trace_run_id.as_ref() {
         vm.set_trace_id(run_id.clone());
     }

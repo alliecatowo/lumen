@@ -525,9 +525,19 @@ impl TrustClient {
             sig.transparency_log_index,
         );
 
-        // Check certificate validity
-        if !sig.certificate.is_valid() {
-            result.add_error("Signing certificate has expired".to_string());
+        // The ephemeral certificate only has to have been valid when the package was
+        // signed (certificates last minutes; packages last years).
+        let cert = &sig.certificate;
+        if sig.signed_at < cert.not_before || sig.signed_at >= cert.not_after {
+            result.add_error(
+                "Package was signed outside its certificate's validity window".to_string(),
+            );
+        }
+
+        // Cryptographic checks done locally: the signature over the content hash and
+        // (when a CA key is configured) the certificate's CA signature.
+        for e in verify_signature_material(sig, policy.ca_public_key.as_deref()) {
+            result.add_error(e);
         }
 
         // Verify identity against policy
@@ -1022,5 +1032,223 @@ mod tests {
         assert!(!identity_matches("github.com/(alice|bob)", "github.com/bobby").unwrap());
         assert!(identity_matches("github.com/alice/.*", "github.com/alice/repo").unwrap());
         assert!(identity_matches("(", "x").is_err());
+    }
+}
+
+/// Locally verify the cryptographic material of a package signature, without any
+/// network access. Returns a list of failures (empty when everything checks out):
+///
+/// 1. the signature (ECDSA P-256 / SHA-256, IEEE P1363, base64) over `content_hash`
+///    verifies with the public key in the certificate;
+/// 2. the public key embedded in the certificate PEM matches the certificate's
+///    `public_key`, and (if `ca_public_key` is given) the certificate's own CA
+///    signature verifies.
+pub fn verify_signature_material(
+    sig: &PackageSignature,
+    ca_public_key: Option<&str>,
+) -> Vec<String> {
+    use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+    use p256::pkcs8::DecodePublicKey;
+
+    let mut errors = Vec::new();
+    let spki = |b64: &str| -> Result<VerifyingKey, String> {
+        let cleaned: String = b64
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("");
+        let der = STANDARD
+            .decode(cleaned.trim())
+            .map_err(|e| format!("invalid base64 key: {e}"))?;
+        VerifyingKey::from_public_key_der(&der).map_err(|e| format!("invalid public key: {e}"))
+    };
+
+    match spki(&sig.certificate.public_key) {
+        Err(e) => errors.push(format!("Certificate public key: {e}")),
+        Ok(key) => match STANDARD
+            .decode(sig.signature.trim())
+            .ok()
+            .and_then(|raw| Signature::from_slice(&raw).ok())
+        {
+            None => {
+                errors.push("Package signature is not a valid ECDSA P-256 signature".to_string())
+            }
+            Some(signature) => {
+                if key.verify(sig.content_hash.as_bytes(), &signature).is_err() {
+                    errors.push("Package signature does not match the content hash".to_string());
+                }
+            }
+        },
+    }
+
+    // Parse the certificate PEM: base64(JSON) then a base64 CA signature.
+    let pem = &sig.certificate.certificate_pem;
+    let mut lines = pem.lines();
+    let mut body = String::new();
+    let mut ca_sig = String::new();
+    let mut in_sig = false;
+    for line in lines.by_ref() {
+        let l = line.trim();
+        if l == "-----BEGIN SIGNATURE-----" {
+            in_sig = true;
+        } else if l.starts_with("-----") || l.is_empty() {
+            continue;
+        } else if in_sig {
+            ca_sig.push_str(l);
+        } else {
+            body.push_str(l);
+        }
+    }
+    let cert_json = STANDARD
+        .decode(&body)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok());
+    match cert_json {
+        None => errors.push("Certificate PEM is malformed".to_string()),
+        Some(json) => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                if v.get("public_key").and_then(|k| k.as_str())
+                    != Some(sig.certificate.public_key.as_str())
+                {
+                    errors.push(
+                        "Certificate public key does not match the certificate body".to_string(),
+                    );
+                }
+                if v.get("cert_id").and_then(|k| k.as_str())
+                    != Some(sig.certificate.cert_id.as_str())
+                {
+                    errors.push("Certificate id does not match the certificate body".to_string());
+                }
+            } else {
+                errors.push("Certificate body is not valid JSON".to_string());
+            }
+            if let Some(ca_key) = ca_public_key {
+                match spki(ca_key) {
+                    Err(e) => errors.push(format!("CA public key: {e}")),
+                    Ok(ca) => {
+                        let ok = STANDARD
+                            .decode(&ca_sig)
+                            .ok()
+                            .and_then(|raw| Signature::from_slice(&raw).ok())
+                            .map(|s| ca.verify(json.as_bytes(), &s).is_ok())
+                            .unwrap_or(false);
+                        if !ok {
+                            errors.push(
+                                "Certificate was not signed by the configured CA".to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    errors
+}
+
+/// Check that downloaded package bytes hash to the signed `content_hash`
+/// (`sha256:<hex>`).
+pub fn verify_archive_hash(sig: &PackageSignature, archive: &[u8]) -> bool {
+    let actual = format!("sha256:{}", hex::encode(Sha256::digest(archive)));
+    actual == sig.content_hash
+}
+
+#[cfg(test)]
+mod verify_material_tests {
+    use super::*;
+    use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+    use p256::pkcs8::EncodePublicKey;
+
+    fn key(seed: u8) -> SigningKey {
+        SigningKey::from_slice(&[seed; 32]).unwrap()
+    }
+    fn spki(k: &SigningKey) -> String {
+        STANDARD.encode(k.verifying_key().to_public_key_der().unwrap().as_bytes())
+    }
+
+    /// Build a signature as the registry + client would: a CA-signed certificate
+    /// JSON and a package signature by the ephemeral key.
+    fn make(ephemeral: &SigningKey, ca: &SigningKey, hash: &str) -> PackageSignature {
+        let now = Utc::now();
+        let body = serde_json::json!({
+            "cert_id": "cert-1",
+            "subject": "alliecatowo/lumen",
+            "public_key": spki(ephemeral),
+        })
+        .to_string();
+        let ca_sig: Signature = ca.sign(body.as_bytes());
+        let pem = format!(
+            "-----BEGIN WARES CERTIFICATE-----\n{}\n\n-----BEGIN SIGNATURE-----\n{}\n-----END WARES CERTIFICATE-----",
+            STANDARD.encode(body.as_bytes()),
+            STANDARD.encode(ca_sig.to_bytes())
+        );
+        let sig: Signature = ephemeral.sign(hash.as_bytes());
+        PackageSignature {
+            package_name: "p".into(),
+            version: "1.0.0".into(),
+            content_hash: hash.into(),
+            signature: STANDARD.encode(sig.to_bytes()),
+            certificate: EphemeralCertificate {
+                cert_id: "cert-1".into(),
+                certificate_pem: pem,
+                public_key: spki(ephemeral),
+                identity: IdentityClaims {
+                    sub: "s".into(),
+                    iss: "i".into(),
+                    aud: "a".into(),
+                    email: None,
+                    name: None,
+                    repository: Some("alliecatowo/lumen".into()),
+                    workflow_ref: None,
+                    event_name: None,
+                    iat: 0,
+                    exp: 0,
+                },
+                not_before: now - Duration::minutes(1),
+                not_after: now + Duration::minutes(9),
+                log_index: None,
+            },
+            signed_at: now,
+            transparency_log_index: None,
+            provenance: None,
+        }
+    }
+
+    #[test]
+    fn valid_signature_and_ca_verify() {
+        let (e, ca) = (key(7), key(9));
+        let s = make(&e, &ca, "sha256:abc");
+        assert!(verify_signature_material(&s, None).is_empty());
+        assert!(verify_signature_material(&s, Some(&spki(&ca))).is_empty());
+    }
+
+    #[test]
+    fn tampered_hash_wrong_ca_and_swapped_key_are_rejected() {
+        let (e, ca, other) = (key(7), key(9), key(11));
+        let mut s = make(&e, &ca, "sha256:abc");
+        s.content_hash = "sha256:evil".into();
+        assert!(verify_signature_material(&s, None)
+            .iter()
+            .any(|m| m.contains("does not match the content hash")));
+
+        let s = make(&e, &ca, "sha256:abc");
+        assert!(verify_signature_material(&s, Some(&spki(&other)))
+            .iter()
+            .any(|m| m.contains("not signed by the configured CA")));
+
+        // A signature by a different key than the certificate's.
+        let mut s = make(&e, &ca, "sha256:abc");
+        let forged: Signature = other.sign(b"sha256:abc");
+        s.signature = STANDARD.encode(forged.to_bytes());
+        assert!(!verify_signature_material(&s, None).is_empty());
+    }
+
+    #[test]
+    fn archive_hash_must_match() {
+        let (e, ca) = (key(7), key(9));
+        let bytes = b"archive";
+        let hash = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
+        let s = make(&e, &ca, &hash);
+        assert!(verify_archive_hash(&s, bytes));
+        assert!(!verify_archive_hash(&s, b"other"));
     }
 }

@@ -119,6 +119,9 @@ fn compile_inner(source: &str) -> LumenResult {
     }
 }
 
+/// Maximum VM instructions a single `run` may execute.
+const RUN_INSTRUCTION_BUDGET: u64 = 50_000_000;
+
 /// Compile and execute Lumen source.
 ///
 /// Returns a LumenResult:
@@ -147,6 +150,9 @@ fn run_inner(source: &str, cell: &str) -> LumenResult {
 
     // Create VM instance and load module
     let mut vm = VM::new();
+    // Untrusted source runs here (playground): bound the work so an infinite loop
+    // returns an error instead of freezing the page.
+    vm.set_instruction_limit(RUN_INSTRUCTION_BUDGET);
     vm.load(module);
 
     // Execute the specified cell
@@ -210,6 +216,13 @@ mod tests {
             eprintln!("Run error: {}", result.to_json());
         }
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn runaway_program_hits_the_instruction_budget() {
+        let source = "```lumen\ncell main() -> Int\n  let mut i = 0\n  while true\n    i = i + 1\n  end\n  return i\nend\n```";
+        let result = run(source, None);
+        assert!(result.is_err(), "infinite loop must stop: {}", result.to_json());
     }
 
     #[test]

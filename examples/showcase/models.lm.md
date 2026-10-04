@@ -5,19 +5,19 @@ Shared data types for the showcase project.
 ```lumen
 type TaskId = String
 
-record Task
+pub record Task
   id: TaskId
   title: String
   done: Bool
   points: Int
 end
 
-record Board
+pub record Board
   name: String
   tasks: list[Task]
 end
 
-record BoardStats
+pub record BoardStats
   total: Int
   done: Int
   open: Int

@@ -415,6 +415,7 @@ mod tests {
                 generic_params: vec![],
                 must_use: false,
                 param_defaults: vec![],
+                is_pub: true,
             },
         );
         let locals = HashMap::new();

@@ -151,7 +151,7 @@ fn invalid_break_and_continue_are_compile_errors() {
 
 #[test]
 fn aliased_import_is_callable_at_runtime() {
-    let util = "cell helper(n: Int) -> Int\n  return n * 2 + 1\nend\n";
+    let util = "pub cell helper(n: Int) -> Int\n  return n * 2 + 1\nend\n";
     let main = "import util: helper as h\n\ncell main() -> Int\n  return h(5) + h(1)\nend\n";
     let resolver = |name: &str| -> Option<String> {
         if name == "util" {

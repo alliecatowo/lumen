@@ -31,13 +31,13 @@ fn compile_with_imports_handles_unfenced_modules() {
     let main_source = r#"
 import math: square
 
-cell main() -> Int
+pub cell main() -> Int
   return square(5)
 end
 "#;
 
     let math_source = r#"
-cell square(x: Int) -> Int
+pub cell square(x: Int) -> Int
   return x * x
 end
 "#;

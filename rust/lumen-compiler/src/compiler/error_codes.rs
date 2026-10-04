@@ -76,6 +76,7 @@ fn resolve_error_code(e: &ResolveError) -> &'static str {
         ResolveError::TraitMethodSignatureMismatch { .. } => "E0125",
         ResolveError::UnstableFeature { .. } => "E0126",
         ResolveError::DeprecatedUsage { .. } => "E0127",
+        ResolveError::PrivateImport { .. } => "E0128",
     }
 }
 
@@ -216,6 +217,7 @@ pub fn error_doc(code: &str) -> &'static str {
         "E0124" => "A trait implementation is missing one or more required methods. Implement all methods declared in the trait.",
         "E0125" => "A trait implementation method has an incompatible signature. The parameter types and return type must match the trait declaration.",
         "E0126" => "An unstable feature was used without opting in. Pass `--allow-unstable` or set `allow_unstable = true` in the compile options.",
+        "E0128" => "A symbol was imported from a module that does not declare it `pub`. Add `pub` to the declaration in that module.",
         "E0127" => "A deprecated cell, record, or enum was used. The declaration is marked `@deprecated` and may be removed in a future edition.",
 
         // Type
@@ -253,8 +255,8 @@ pub fn all_error_codes() -> Vec<(&'static str, &'static str)> {
         "E0013", "E0014", "E0015", "E0016", "E0100", "E0101", "E0102", "E0103", "E0104", "E0105",
         "E0106", "E0107", "E0108", "E0109", "E0110", "E0111", "E0112", "E0113", "E0114", "E0115",
         "E0116", "E0117", "E0118", "E0119", "E0120", "E0121", "E0122", "E0123", "E0124", "E0125",
-        "E0126", "E0127", "E0200", "E0201", "E0202", "E0203", "E0204", "E0205", "E0206", "E0207",
-        "E0208", "E0209", "E0300", "E0400", "E0401", "E0402", "E0403", "E0500",
+        "E0126", "E0127", "E0128", "E0200", "E0201", "E0202", "E0203", "E0204", "E0205", "E0206",
+        "E0207", "E0208", "E0209", "E0300", "E0400", "E0401", "E0402", "E0403", "E0500",
     ];
     codes.iter().map(|&c| (c, error_doc(c))).collect()
 }

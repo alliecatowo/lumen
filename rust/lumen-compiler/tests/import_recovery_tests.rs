@@ -119,7 +119,7 @@ end
 fn import_good_dep_works() {
     let good_lib = markdown(
         r#"
-cell helper(x: Int) -> Int
+pub cell helper(x: Int) -> Int
   return x * 2
 end
 "#,
@@ -128,7 +128,7 @@ end
         r#"
 import goodlib: helper
 
-cell main() -> Int
+pub cell main() -> Int
   return helper(5)
 end
 "#,
@@ -350,7 +350,7 @@ end
 fn import_raw_source_dep() {
     // Test importing a raw .lm source (no markdown fencing)
     let raw_lib = r#"
-cell square(x: Int) -> Int
+pub cell square(x: Int) -> Int
   return x * x
 end
 "#;
@@ -358,7 +358,7 @@ end
         r#"
 import rawlib: square
 
-cell main() -> Int
+pub cell main() -> Int
   return square(5)
 end
 "#,

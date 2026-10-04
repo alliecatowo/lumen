@@ -4,14 +4,14 @@ Simple, deterministic testing helpers for Lumen programs.
 
 ```lumen
 # Test result record
-record TestResult
+pub record TestResult
   name: String
   passed: Bool
   message: String
 end
 
 # Summary for a suite run
-record TestSummary
+pub record TestSummary
   total: Int
   passed: Int
   failed: Int
@@ -19,17 +19,17 @@ record TestSummary
 end
 
 # Create a suite (just a list of test results)
-cell create_test_suite() -> list[TestResult]
+pub cell create_test_suite() -> list[TestResult]
   return []
 end
 
 # Add a test result to a test suite
-cell add_test(suite: list[TestResult], test: TestResult) -> list[TestResult]
+pub cell add_test(suite: list[TestResult], test: TestResult) -> list[TestResult]
   return append(suite, test)
 end
 
 # Assert that two values are equal
-cell assert_eq[T](actual: T, expected: T, message: String) -> TestResult
+pub cell assert_eq[T](actual: T, expected: T, message: String) -> TestResult
   let passed = actual == expected
   let mut result_message = message
   if not passed
@@ -43,12 +43,12 @@ cell assert_eq[T](actual: T, expected: T, message: String) -> TestResult
 end
 
 # Alias: same as assert_eq
-cell assert_equal[T](actual: T, expected: T, message: String) -> TestResult
+pub cell assert_equal[T](actual: T, expected: T, message: String) -> TestResult
   return assert_eq(actual, expected, message)
 end
 
 # Assert that two values are not equal
-cell assert_ne[T](actual: T, expected: T, message: String) -> TestResult
+pub cell assert_ne[T](actual: T, expected: T, message: String) -> TestResult
   let passed = actual != expected
   let mut result_message = message
   if not passed
@@ -62,12 +62,12 @@ cell assert_ne[T](actual: T, expected: T, message: String) -> TestResult
 end
 
 # Alias: same as assert_ne
-cell assert_not_equal[T](actual: T, expected: T, message: String) -> TestResult
+pub cell assert_not_equal[T](actual: T, expected: T, message: String) -> TestResult
   return assert_ne(actual, expected, message)
 end
 
 # Assert that a condition is true
-cell assert_true(condition: Bool, message: String) -> TestResult
+pub cell assert_true(condition: Bool, message: String) -> TestResult
   let mut result_message = message
   if not condition
     result_message = message + " (expected true, got false)"
@@ -80,7 +80,7 @@ cell assert_true(condition: Bool, message: String) -> TestResult
 end
 
 # Assert that a condition is false
-cell assert_false(condition: Bool, message: String) -> TestResult
+pub cell assert_false(condition: Bool, message: String) -> TestResult
   let passed = not condition
   let mut result_message = message
   if not passed
@@ -94,7 +94,7 @@ cell assert_false(condition: Bool, message: String) -> TestResult
 end
 
 # Assert that a value is null
-cell assert_null[T](value: T | Null, message: String) -> TestResult
+pub cell assert_null[T](value: T | Null, message: String) -> TestResult
   let passed = value == null
   let mut result_message = message
   if not passed
@@ -108,7 +108,7 @@ cell assert_null[T](value: T | Null, message: String) -> TestResult
 end
 
 # Assert that a value is not null
-cell assert_not_null[T](value: T | Null, message: String) -> TestResult
+pub cell assert_not_null[T](value: T | Null, message: String) -> TestResult
   let passed = value != null
   let mut result_message = message
   if not passed
@@ -122,7 +122,7 @@ cell assert_not_null[T](value: T | Null, message: String) -> TestResult
 end
 
 # Assert that a list contains a value
-cell assert_contains[T](collection: list[T], value: T, message: String) -> TestResult
+pub cell assert_contains[T](collection: list[T], value: T, message: String) -> TestResult
   let passed = contains(collection, value)
   let mut result_message = message
   if not passed
@@ -136,7 +136,7 @@ cell assert_contains[T](collection: list[T], value: T, message: String) -> TestR
 end
 
 # Assert that a list does not contain a value
-cell assert_not_contains[T](collection: list[T], value: T, message: String) -> TestResult
+pub cell assert_not_contains[T](collection: list[T], value: T, message: String) -> TestResult
   let passed = not contains(collection, value)
   let mut result_message = message
   if not passed
@@ -150,7 +150,7 @@ cell assert_not_contains[T](collection: list[T], value: T, message: String) -> T
 end
 
 # Assert that a list has expected length
-cell assert_length[T](lst: list[T], expected_len: Int, message: String) -> TestResult
+pub cell assert_length[T](lst: list[T], expected_len: Int, message: String) -> TestResult
   let actual_len = len(lst)
   let passed = actual_len == expected_len
   let mut result_message = message
@@ -165,7 +165,7 @@ cell assert_length[T](lst: list[T], expected_len: Int, message: String) -> TestR
 end
 
 # Assert that a list is empty
-cell assert_empty[T](value: list[T], message: String) -> TestResult
+pub cell assert_empty[T](value: list[T], message: String) -> TestResult
   let actual_len = len(value)
   let passed = actual_len == 0
   let mut result_message = message
@@ -180,7 +180,7 @@ cell assert_empty[T](value: list[T], message: String) -> TestResult
 end
 
 # Assert that a list is not empty
-cell assert_not_empty[T](value: list[T], message: String) -> TestResult
+pub cell assert_not_empty[T](value: list[T], message: String) -> TestResult
   let actual_len = len(value)
   let passed = actual_len > 0
   let mut result_message = message
@@ -195,7 +195,7 @@ cell assert_not_empty[T](value: list[T], message: String) -> TestResult
 end
 
 # Assert that a string starts with a prefix
-cell assert_starts_with(str_val: String, prefix: String, message: String) -> TestResult
+pub cell assert_starts_with(str_val: String, prefix: String, message: String) -> TestResult
   let actual_len = len(str_val)
   let prefix_len = len(prefix)
   let mut passed = false
@@ -215,7 +215,7 @@ cell assert_starts_with(str_val: String, prefix: String, message: String) -> Tes
 end
 
 # Assert that a string ends with a suffix
-cell assert_ends_with(str_val: String, suffix: String, message: String) -> TestResult
+pub cell assert_ends_with(str_val: String, suffix: String, message: String) -> TestResult
   let str_len = len(str_val)
   let suffix_len = len(suffix)
   let mut passed = false
@@ -236,7 +236,7 @@ cell assert_ends_with(str_val: String, suffix: String, message: String) -> TestR
 end
 
 # Return true when every test passed
-cell all_passed(tests: list[TestResult]) -> Bool
+pub cell all_passed(tests: list[TestResult]) -> Bool
   for test in tests
     if not test.passed
       return false
@@ -246,7 +246,7 @@ cell all_passed(tests: list[TestResult]) -> Bool
 end
 
 # Build a deterministic summary without printing
-cell summarize_tests(tests: list[TestResult]) -> TestSummary
+pub cell summarize_tests(tests: list[TestResult]) -> TestSummary
   let total = len(tests)
   let mut passed_count = 0
   for test in tests
@@ -264,7 +264,7 @@ cell summarize_tests(tests: list[TestResult]) -> TestSummary
 end
 
 # Run a test suite, print results, and return summary
-cell run_tests(tests: list[TestResult]) -> TestSummary
+pub cell run_tests(tests: list[TestResult]) -> TestSummary
   let summary = summarize_tests(tests)
 
   print("=== Test Results ===")

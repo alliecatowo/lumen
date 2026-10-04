@@ -660,7 +660,7 @@ end
 
 ### 5.11 Defer
 
-`defer` schedules code to run when the enclosing scope exits. Multiple defers execute
+`defer` schedules code to run when the enclosing cell returns. Multiple defers execute
 in LIFO order (last deferred, first executed):
 
 ```lumen
@@ -1450,7 +1450,7 @@ When `@deterministic true` is set:
 
 ### 11.5 Defer Execution Order
 
-Multiple `defer` blocks execute in LIFO order when the scope exits.
+Multiple `defer` blocks execute in LIFO order when the cell returns.
 
 ### 11.6 Trace System
 

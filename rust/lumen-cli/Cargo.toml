@@ -37,7 +37,7 @@ flate2 = "1"
 rustyline = "18"
 
 # Authentication dependencies
-keyring = { version = "3", optional = true }
+keyring = { version = "4", optional = true }
 ed25519-dalek = { version = "3", features = ["rand_core"], optional = true }
 rand = { version = "0.10", optional = true }
 base64 = "0.23"

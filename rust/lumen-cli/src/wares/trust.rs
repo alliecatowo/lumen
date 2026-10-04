@@ -164,11 +164,6 @@ impl TrustClient {
         self.access_token_override = Some(token);
     }
 
-    /// Whether publishing can authenticate (OIDC login or an access token).
-    pub fn can_publish(&self) -> bool {
-        self.access_token_override.is_some() || self.is_authenticated()
-    }
-
     /// Full URL of a registry API endpoint, e.g. `endpoint("auth/cert")`.
     fn endpoint(&self, path: &str) -> String {
         format!("{}/api/v1/{}", api_root(&self.registry_url), path)

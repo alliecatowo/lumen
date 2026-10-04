@@ -1,0 +1,7 @@
+cell fd(a: Int, b: Int) -> Int
+  return a // b
+end
+cell main() -> Int
+  print(fd(10, 3))
+  return fd(10, 0)
+end

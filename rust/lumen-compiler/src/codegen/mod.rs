@@ -7,6 +7,7 @@ pub mod context;
 pub mod emit;
 pub mod ffi;
 pub mod jit;
+pub mod jit_verify;
 pub mod lower;
 pub mod types;
 pub mod wasm;

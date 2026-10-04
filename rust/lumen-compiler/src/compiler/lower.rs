@@ -1149,6 +1149,17 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
         collect_effect_tool_bindings(program),
         collect_effect_handler_cells(program),
     );
+    for item in &program.items {
+        if let Item::Cell(c) = item {
+            lowerer.cell_params.insert(
+                c.name.clone(),
+                c.params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.default_value.clone(), p.variadic))
+                    .collect(),
+            );
+        }
+    }
 
     for d in &program.directives {
         let name = match &d.value {
@@ -1675,6 +1686,21 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
     }
 }
 
+/// Literals with more elements than this are built incrementally (see `ListLit`).
+const MAX_INLINE_LITERAL_ELEMS: usize = 64;
+
+/// Key the parser gives a `...expr` entry inside a map literal.
+const MAP_SPREAD_KEY: &str = "__spread";
+
+/// A map literal needs incremental lowering if it spreads another map or is too
+/// big for the 1 + 2N consecutive-register form.
+fn map_lit_needs_incremental_lowering(pairs: &[(Expr, Expr)]) -> bool {
+    pairs.len() > MAX_INLINE_LITERAL_ELEMS / 2
+        || pairs
+            .iter()
+            .any(|(k, _)| matches!(k, Expr::StringLit(name, _) if name == MAP_SPREAD_KEY))
+}
+
 /// Tracks a loop for break/continue patching
 struct LoopContext {
     label: Option<String>,
@@ -1709,6 +1735,9 @@ struct Lowerer<'a> {
     /// Accumulated effect handler metadata for the current cell being lowered.
     /// Each entry corresponds to one HandlePush instruction emitted.
     effect_handler_metas: Vec<LirEffectHandlerMeta>,
+    /// Parameter lists of the module's top-level cells: (name, default, variadic).
+    /// Used to bind named arguments by name and to fill in defaults at call sites.
+    cell_params: HashMap<String, Vec<(String, Option<Expr>, bool)>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -1736,7 +1765,54 @@ impl<'a> Lowerer<'a> {
             defer_flags: Vec::new(),
             pending_loop_result: None,
             effect_handler_metas: Vec::new(),
+            cell_params: HashMap::new(),
         }
+    }
+
+    /// Rewrite a call to a known top-level cell so that the arguments are
+    /// positional, in parameter order, with named arguments bound by name and
+    /// defaults filled in. Returns `None` when no rewrite is needed (or possible).
+    fn normalize_call_args(&self, name: &str, args: &[CallArg]) -> Option<Vec<CallArg>> {
+        let params = self.cell_params.get(name)?;
+        if args.iter().any(|a| matches!(a, CallArg::Role(..))) {
+            return None;
+        }
+        let positional: Vec<&CallArg> = args
+            .iter()
+            .filter(|a| matches!(a, CallArg::Positional(_)))
+            .collect();
+        let has_named = args.iter().any(|a| matches!(a, CallArg::Named(..)));
+        let fixed = params.iter().filter(|p| !p.2).count();
+        if !has_named && positional.len() >= fixed {
+            return None;
+        }
+        let mut out: Vec<CallArg> = Vec::with_capacity(params.len());
+        let mut next = 0usize;
+        for (pname, default, variadic) in params {
+            if *variadic {
+                out.extend(positional[next..].iter().map(|a| (*a).clone()));
+                next = positional.len();
+            } else if next < positional.len() {
+                out.push(positional[next].clone());
+                next += 1;
+            } else if let Some(named) = args
+                .iter()
+                .find(|a| matches!(a, CallArg::Named(n, _, _) if n == pname))
+            {
+                match named {
+                    CallArg::Named(_, e, _) => out.push(CallArg::Positional(e.clone())),
+                    _ => unreachable!(),
+                }
+            } else if let Some(d) = default {
+                out.push(CallArg::Positional(d.clone()));
+            } else {
+                return None;
+            }
+        }
+        if next < positional.len() {
+            return None;
+        }
+        Some(out)
     }
 
     fn intern_string(&mut self, s: &str) -> u16 {
@@ -2517,8 +2593,14 @@ impl<'a> Lowerer<'a> {
                                     callee_reg,
                                     callee_idx,
                                 ));
+                                let normalized = if ra.lookup(name).is_none() {
+                                    self.normalize_call_args(name, args)
+                                } else {
+                                    None
+                                };
+                                let call_args: &[CallArg] = normalized.as_deref().unwrap_or(args);
                                 let arg_regs =
-                                    self.lower_call_arg_regs(args, None, ra, consts, instrs);
+                                    self.lower_call_arg_regs(call_args, None, ra, consts, instrs);
                                 self.emit_tail_call_with_regs(callee_reg, &arg_regs, ra, instrs);
                                 return;
                             }
@@ -3096,8 +3178,41 @@ impl<'a> Lowerer<'a> {
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
     ) {
-        let key_reg = self.push_const_string(field_name, ra, consts, instrs);
+        // `t.0` / `t.1.0`: a numeric field name is a tuple (positional) index.
+        let key_reg = match field_name.parse::<i64>() {
+            Ok(n) => self.push_const_int(n, ra, consts, instrs),
+            Err(_) => self.push_const_string(field_name, ra, consts, instrs),
+        };
         instrs.push(Instruction::abc(OpCode::GetIndex, dest, obj_reg, key_reg));
+    }
+
+    /// Fill in the declared default of every field of record `type_name` that the
+    /// constructor did not provide.
+    fn emit_record_defaults(
+        &mut self,
+        type_name: &str,
+        provided: &[&str],
+        dest: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        let defaults: Vec<(String, Expr)> = match self.symbols.types.get(type_name) {
+            Some(crate::compiler::resolve::TypeInfo {
+                kind: crate::compiler::resolve::TypeInfoKind::Record(def),
+                ..
+            }) => def
+                .fields
+                .iter()
+                .filter(|f| !provided.contains(&f.name.as_str()))
+                .filter_map(|f| f.default_value.clone().map(|d| (f.name.clone(), d)))
+                .collect(),
+            _ => return,
+        };
+        for (field, default) in defaults {
+            let val = self.lower_expr(&default, ra, consts, instrs);
+            self.emit_set_field(dest, &field, val, ra, consts, instrs);
+        }
     }
 
     fn emit_set_field(
@@ -3669,8 +3784,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expr::ListLit(elems, _) => {
-                // Check if any element is a spread - if so, use append-based lowering
-                let has_spread = elems.iter().any(|e| matches!(e, Expr::SpreadExpr(_, _)));
+                // Spreads and big literals use append-based lowering. The compact form
+                // needs 1 + N consecutive registers, which a register file of 256 cannot
+                // provide (nor can the 8-bit element count) for large N.
+                let has_spread = elems.iter().any(|e| matches!(e, Expr::SpreadExpr(_, _)))
+                    || elems.len() > MAX_INLINE_LITERAL_ELEMS;
 
                 let dest = if has_spread {
                     let dest = ra.alloc_temp();
@@ -3733,6 +3851,9 @@ impl<'a> Lowerer<'a> {
                             _ => {
                                 let er = self.lower_expr(elem, ra, consts, instrs);
                                 instrs.push(Instruction::abc(OpCode::Append, dest, er, 0));
+                                // The element is dead once appended; recycle its temp so a
+                                // thousand-element literal does not exhaust the registers.
+                                ra.free_temp(er);
                             }
                         }
                     }
@@ -3765,6 +3886,36 @@ impl<'a> Lowerer<'a> {
                 };
                 dest
             }
+            Expr::MapLit(pairs, _) if map_lit_needs_incremental_lowering(pairs) => {
+                // `{...a, "k": v}` and large maps: build an empty map and fold the
+                // entries in source order (later entries win), merging spreads.
+                let dest = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::NewMap, dest, 0, 0));
+                for (k, v) in pairs {
+                    if matches!(k, Expr::StringLit(name, _) if name == MAP_SPREAD_KEY) {
+                        let src = self.lower_expr(v, ra, consts, instrs);
+                        let args = ra.alloc_block(2);
+                        instrs.push(Instruction::abc(OpCode::Move, args, dest, 0));
+                        instrs.push(Instruction::abc(OpCode::Move, args + 1, src, 0));
+                        instrs.push(Instruction::abc(
+                            OpCode::Intrinsic,
+                            dest,
+                            IntrinsicId::Merge as u8,
+                            args,
+                        ));
+                        ra.free_temp(src);
+                        ra.free_temp(args);
+                        ra.free_temp(args + 1);
+                    } else {
+                        let kr = self.lower_expr(k, ra, consts, instrs);
+                        let vr = self.lower_expr(v, ra, consts, instrs);
+                        instrs.push(Instruction::abc(OpCode::SetIndex, dest, kr, vr));
+                        ra.free_temp(kr);
+                        ra.free_temp(vr);
+                    }
+                }
+                dest
+            }
             Expr::MapLit(pairs, _) => {
                 let block_start = ra.alloc_block(1 + (pairs.len() * 2) as u8);
                 let dest = block_start;
@@ -3794,6 +3945,8 @@ impl<'a> Lowerer<'a> {
                     let val_reg = self.lower_expr(val, ra, consts, instrs);
                     self.emit_set_field(dest, field_name, val_reg, ra, consts, instrs);
                 }
+                let provided: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                self.emit_record_defaults(name, &provided, dest, ra, consts, instrs);
                 dest
             }
             Expr::Pipe { left, right, span } => {
@@ -4144,6 +4297,14 @@ impl<'a> Lowerer<'a> {
                                 }
                             }
                         }
+                        let provided: Vec<&str> = args
+                            .iter()
+                            .filter_map(|a| match a {
+                                CallArg::Named(field, _, _) => Some(field.as_str()),
+                                _ => None,
+                            })
+                            .collect();
+                        self.emit_record_defaults(name, &provided, dest, ra, consts, instrs);
                         return dest;
                     }
 
@@ -4478,14 +4639,23 @@ impl<'a> Lowerer<'a> {
                     self.lower_expr(callee, ra, consts, instrs)
                 };
 
-                let arg_regs =
-                    self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
-                // Pack variadic args if the callee is a known cell with variadic params
                 let callee_name = if let Expr::Ident(ref name, _) = **callee {
                     Some(name.as_str())
                 } else {
                     None
                 };
+                // Bind named arguments by name and fill in defaults for calls to
+                // known top-level cells (a local variable of the same name wins).
+                let normalized = match callee_name {
+                    Some(n) if implicit_self_arg.is_none() && ra.lookup(n).is_none() => {
+                        self.normalize_call_args(n, args)
+                    }
+                    _ => None,
+                };
+                let args: &[CallArg] = normalized.as_deref().unwrap_or(args);
+                let arg_regs =
+                    self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
+                // Pack variadic args if the callee is a known cell with variadic params
                 let arg_regs = if let Some(name) = callee_name {
                     self.pack_variadic_args(name, arg_regs, ra, consts, instrs)
                 } else {

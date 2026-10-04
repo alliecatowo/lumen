@@ -441,11 +441,20 @@ fn publish_refuses_path_dependencies() {
     let tmp = TempDir::new("pubpath");
     let reg = FileRegistry::new();
     let pkg = tmp.path().join("pkg");
-    write_package(&pkg, "@t/pub", "0.1.0", &[("@t/local", "{ path = \"../local\" }")]);
+    write_package(
+        &pkg,
+        "@t/pub",
+        "0.1.0",
+        &[("@t/local", "{ path = \"../local\" }")],
+    );
 
     let out = publish_in(&pkg, tmp.path(), &reg, &["--dry-run"]);
     assert!(!out.status.success(), "{}", text(&out));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be published"), "{}", text(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot be published"),
+        "{}",
+        text(&out)
+    );
 }
 
 #[test]

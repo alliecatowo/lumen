@@ -1,0 +1,12 @@
+cell greet(name: String) -> String
+  return "hello " + name
+end
+cell same(a: String, b: String) -> Bool
+  return a == b
+end
+cell main() -> Int
+  print(greet("world"))
+  print(same("a", "a"))
+  print(same("a", "b"))
+  return 0
+end

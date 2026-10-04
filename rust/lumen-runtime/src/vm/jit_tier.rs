@@ -60,6 +60,30 @@ impl Default for JitTierConfig {
     }
 }
 
+/// How the raw `i64` result of a native call maps back to a VM [`Value`].
+///
+/// [`Value`]: crate::vm::values::Value
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitRet {
+    Int,
+    Bool,
+    /// Heap `*mut String` (experimental tier only; never produced by the VM's
+    /// default strict tier).
+    Str,
+}
+
+/// Returns true when the `LUMEN_JIT` environment variable asks for the JIT
+/// to be disabled (`0`, `off`, `false`, `no`).
+pub fn jit_disabled_by_env() -> bool {
+    match std::env::var("LUMEN_JIT") {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "false" | "no"
+        ),
+        Err(_) => false,
+    }
+}
+
 /// Eligibility status for a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellEligibility {
@@ -87,6 +111,8 @@ pub struct JitTier {
     /// The actual Cranelift JIT engine (only present when feature = "jit").
     #[cfg(feature = "jit")]
     engine: Option<JitEngine>,
+    /// True once the module-wide compilation has been attempted.
+    engine_attempted: bool,
     /// Statistics.
     pub stats: JitTierStats,
 }
@@ -102,11 +128,17 @@ pub struct JitTierStats {
     pub compile_failures: u64,
     /// Total number of calls tracked.
     pub total_calls_tracked: u64,
+    /// Native calls that trapped (overflow, division by zero, stack budget)
+    /// and were re-run by the interpreter.
+    pub jit_fallbacks: u64,
 }
 
 impl JitTier {
     /// Create a new JIT tier with the given configuration.
-    pub fn new(config: JitTierConfig) -> Self {
+    pub fn new(mut config: JitTierConfig) -> Self {
+        if jit_disabled_by_env() {
+            config.enabled = false;
+        }
         Self {
             call_counts: Vec::new(),
             eligibility: Vec::new(),
@@ -114,6 +146,7 @@ impl JitTier {
             config,
             #[cfg(feature = "jit")]
             engine: None,
+            engine_attempted: false,
             stats: JitTierStats::default(),
         }
     }
@@ -132,6 +165,11 @@ impl JitTier {
         self.call_counts.resize(num_cells, 0);
         self.eligibility.resize(num_cells, CellEligibility::Unknown);
         self.compiled.clear();
+        self.engine_attempted = false;
+        #[cfg(feature = "jit")]
+        {
+            self.engine = None;
+        }
         self.stats = JitTierStats::default();
     }
 
@@ -185,110 +223,110 @@ impl JitTier {
         self.call_counts[cell_idx] == self.config.hot_threshold + 1
     }
 
-    /// Attempt to compile a hot cell. Returns `true` on success.
+    /// Compile the module's eligible cells (once) and report whether
+    /// `cell_idx` is among them.
     ///
-    /// On the `jit` feature, this creates/updates the Cranelift JIT engine and
-    /// compiles all cells from the module. Cells with unsupported opcodes will
-    /// cause compilation to fail gracefully, falling back to the interpreter.
+    /// The strict tier decides eligibility for the whole module at once (a cell
+    /// is only compiled if every callee is too), so one compilation covers every
+    /// cell. A cell that was not compiled is marked not eligible and stays
+    /// interpreted. Compiler panics are caught and treated as "not compiled".
     ///
-    /// On no-jit builds, this is a no-op that returns `false`.
-    pub fn try_compile(&mut self, _cell_idx: usize, module: &LirModule) -> bool {
+    /// On no-jit builds this is a no-op that returns `false`.
+    pub fn try_compile(&mut self, cell_idx: usize, module: &LirModule) -> bool {
         #[cfg(feature = "jit")]
         {
-            if module.cells.is_empty() {
-                self.stats.compile_failures += 1;
-                return false;
-            }
-
-            let opt = match self.config.opt_level {
-                JitOptLevel::None => OptLevel::None,
-                JitOptLevel::Speed => OptLevel::Speed,
-                JitOptLevel::SpeedAndSize => OptLevel::SpeedAndSize,
-            };
-            let settings = CodegenSettings {
-                opt_level: opt,
-                target: None,
-            };
-
-            // Create a new engine each time (Cranelift JITModule doesn't support
-            // incremental addition of functions after finalize_definitions).
-            let mut engine = JitEngine::new(settings, 0);
-            match engine.compile_module(module) {
-                Ok(()) => {
-                    // Only mark cells that were actually compiled by the engine.
-                    // Cells with unsupported opcodes are silently skipped by
-                    // compile_module and won't be in the engine's cache.
-                    for (idx, cell) in module.cells.iter().enumerate() {
-                        if engine.is_compiled(&cell.name) {
-                            self.compiled.insert(idx);
-                            self.stats.cells_compiled += 1;
+            if !self.engine_attempted {
+                self.engine_attempted = true;
+                if !module.cells.is_empty() {
+                    let opt = match self.config.opt_level {
+                        JitOptLevel::None => OptLevel::None,
+                        JitOptLevel::Speed => OptLevel::Speed,
+                        JitOptLevel::SpeedAndSize => OptLevel::SpeedAndSize,
+                    };
+                    let settings = CodegenSettings {
+                        opt_level: opt,
+                        target: None,
+                    };
+                    let mut engine = JitEngine::new(settings, 0);
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        engine.compile_module(module)
+                    }));
+                    match outcome {
+                        Ok(Ok(())) => {
+                            for (idx, cell) in module.cells.iter().enumerate() {
+                                if engine.is_compiled(&cell.name) {
+                                    self.compiled.insert(idx);
+                                    self.stats.cells_compiled += 1;
+                                }
+                            }
+                            self.engine = Some(engine);
+                        }
+                        _ => {
+                            self.stats.compile_failures += 1;
                         }
                     }
-                    self.engine = Some(engine);
-                    true
-                }
-                Err(_e) => {
-                    // Compilation failed — mark the target cell as not eligible
-                    // so we don't retry it.
-                    if _cell_idx < self.eligibility.len() {
-                        self.eligibility[_cell_idx] = CellEligibility::NotEligible;
-                    }
+                } else {
                     self.stats.compile_failures += 1;
-                    false
                 }
             }
-        }
-
-        #[cfg(not(feature = "jit"))]
-        {
-            let _ = module;
-            false
-        }
-    }
-
-    /// Execute a JIT-compiled cell with the given i64 arguments.
-    /// Returns `Some(result)` on success, `None` if not compiled or execution fails.
-    #[inline]
-    pub fn execute(&mut self, cell_name: &str, args: &[i64]) -> Option<i64> {
-        #[cfg(feature = "jit")]
-        {
-            if let Some(ref mut engine) = self.engine {
-                match engine.execute_jit(cell_name, args) {
-                    Ok(result) => {
-                        self.stats.jit_executions += 1;
-                        Some(result)
-                    }
-                    Err(_) => None,
+            if self.compiled.contains(&cell_idx) {
+                true
+            } else {
+                if cell_idx < self.eligibility.len() {
+                    self.eligibility[cell_idx] = CellEligibility::NotEligible;
                 }
-            } else {
-                None
-            }
-        }
-
-        #[cfg(not(feature = "jit"))]
-        {
-            let _ = (cell_name, args);
-            None
-        }
-    }
-
-    /// Check if a compiled cell returns a heap-allocated string pointer.
-    /// When true, the i64 result from `execute` is a `*mut String` that must
-    /// be consumed via `lumen_compiler::codegen::jit::jit_take_string`.
-    pub fn returns_string(&self, cell_name: &str) -> bool {
-        #[cfg(feature = "jit")]
-        {
-            if let Some(ref engine) = self.engine {
-                engine.returns_string(cell_name)
-            } else {
                 false
             }
         }
 
         #[cfg(not(feature = "jit"))]
         {
-            let _ = cell_name;
+            let _ = (cell_idx, module);
             false
+        }
+    }
+
+    /// Execute a JIT-compiled cell with the given i64 arguments.
+    ///
+    /// Returns `Some((raw, kind))` on success. Returns `None` if the cell is
+    /// not compiled or the native code trapped; in the trap case the cell is
+    /// permanently demoted to the interpreter, which will re-run the call and
+    /// produce the exact interpreter behaviour (error or result).
+    #[inline]
+    pub fn execute(
+        &mut self,
+        cell_idx: usize,
+        cell_name: &str,
+        args: &[i64],
+    ) -> Option<(i64, JitRet)> {
+        #[cfg(feature = "jit")]
+        {
+            let engine = self.engine.as_mut()?;
+            match engine.execute_jit(cell_name, args) {
+                Ok(raw) => {
+                    self.stats.jit_executions += 1;
+                    let kind = match engine.return_kind(cell_name) {
+                        Some(lumen_compiler::codegen::jit::JitReturn::Bool) => JitRet::Bool,
+                        Some(lumen_compiler::codegen::jit::JitReturn::Str) => JitRet::Str,
+                        _ => JitRet::Int,
+                    };
+                    Some((raw, kind))
+                }
+                Err(_) => {
+                    self.stats.jit_fallbacks += 1;
+                    self.compiled.remove(&cell_idx);
+                    if cell_idx < self.eligibility.len() {
+                        self.eligibility[cell_idx] = CellEligibility::NotEligible;
+                    }
+                    None
+                }
+            }
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = (cell_idx, cell_name, args);
+            None
         }
     }
 

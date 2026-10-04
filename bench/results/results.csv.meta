@@ -1,6 +1,6 @@
-date: 2026-10-04T00:44:25Z
-repo_commit: bdfa80779ec7
-repo_dirty: no
+date: 2026-10-04T03:02:53Z
+repo_commit: 26ddb01894cc
+repo_dirty: yes
 lumen: lumen 0.6.1
 lumen_binary: /home/allie/develop/lumen/.claude/worktrees/fix-loop-hoist/target/release/lumen
 cpu: AMD Ryzen 9 6900HX with Radeon Graphics

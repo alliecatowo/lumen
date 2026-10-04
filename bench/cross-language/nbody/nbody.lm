@@ -59,7 +59,7 @@ cell advance(x: list[Float], y: list[Float], z: list[Float], vx: list[Float], vy
     end
     s = s + 1
   end
-  return to_string(energy(x, y, z, vx, vy, vz, mass))
+  return to_string(round(energy(x, y, z, vx, vy, vz, mass) * 1000000000.0) / 1000000000.0)
 end
 
 cell main() -> String
@@ -95,9 +95,9 @@ cell main() -> String
   vy[0] = 0.0 - py / sm
   vz[0] = 0.0 - pz / sm
 
-  let e0 = to_string(energy(x, y, z, vx, vy, vz, mass))
+  let e0 = to_string(round(energy(x, y, z, vx, vy, vz, mass) * 1000000000.0) / 1000000000.0)
   print(e0)
-  let e1 = advance(x, y, z, vx, vy, vz, mass, 50000)
+  let e1 = advance(x, y, z, vx, vy, vz, mass, 1000000)
   print(e1)
   return "done"
 end

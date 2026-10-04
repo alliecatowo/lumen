@@ -30,7 +30,7 @@ cell is_sorted(items: list[Int]) -> Bool
 end
 
 cell main() -> String
-  let n = 100000
+  let n = 1000000
   let data = make_data(n)
   let sorted = sort(data)
   let ok = is_sorted(sorted)

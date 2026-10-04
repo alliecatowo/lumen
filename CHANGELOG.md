@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.2] - 2026-10-03
+
+### Fixed
+- Package manager: working dependency resolver (backtracking) with download artifacts, safe installs, scoped `wares pack`, signed publish through the registry, canonical default registry.
+- Registry and transparency-log workers: authenticated, ownership-checked, immutable publishes; CA-verified signatures; RFC 6962 proofs and signed checkpoints.
+- LSP: no more crashes on non-ASCII lines; every request gets a reply.
+- `lumen fmt` no longer deletes comments or changes float literals; `lumen ci` fails on strict lint findings.
+- Hardened install.sh (checksums) and the release pipeline; VS Code extension uses its bundled server.
+
 All notable changes to the Lumen project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

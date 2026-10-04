@@ -139,10 +139,10 @@ pub struct RegistryToken {
     pub scopes: Vec<String>,
 }
 
-/// Default registry API root. This is the registry worker itself (it answers
+/// Default registry API root: the registry worker, routed at wares.lumen-lang.com/api/* (it answers
 /// `/api/v1/...`), not the wares website. Override with `LUMEN_REGISTRY`,
 /// `WARES_REGISTRY` or `[registry] default` in `lumen.toml`.
-pub const DEFAULT_REGISTRY_URL: &str = "https://wares-registry.alliecatowo.workers.dev/api/v1";
+pub const DEFAULT_REGISTRY_URL: &str = "https://wares.lumen-lang.com/api/v1";
 
 /// Default transparency log base URL (the log worker; override with `WARES_LOG_URL`).
 pub const DEFAULT_LOG_URL: &str = "https://wares-transparency-log.alliecatowo.workers.dev";

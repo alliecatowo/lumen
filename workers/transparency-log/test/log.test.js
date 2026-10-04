@@ -199,3 +199,39 @@ describe('append and query', () => {
     expect(intParam('5000', 100, 1, 1000)).toBe(1000);
   });
 });
+
+describe('signatures produced by the Rust CLI', () => {
+  // Produced by rust/lumen-cli/src/wares/trust.rs (matches_the_vector_checked_by_the_transparency_log_tests):
+  // p256 ECDSA/SHA-256, IEEE P1363 signature over the content hash string, SPKI DER public key.
+  const RUST_SPKI =
+    'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHhhTL9R1TALzBB2cdc6zO4P/2BrHzk/ogsyxyYvFiW6kbDEcTi/0DdlqNlPm5FRF0y3+SG7O11x6kMahiIHAow==';
+  const RUST_SIG =
+    'Py/XmCqnUGb3F/wUH8yGNBQkdScEcwWumugFxXVpg+k3XfLz+/485M5dd0t9XwXTVmYgJRvHQsyG6QBFfzmn9Q==';
+  const RUST_HASH = 'sha256:' + 'ab'.repeat(32);
+
+  it('are accepted by the log when the certificate carries the CLI key', async () => {
+    const identity = 'github.com/alice';
+    const res = await post({
+      package_name: '@alice/pkg',
+      version: '1.0.0',
+      content_hash: RUST_HASH,
+      identity,
+      certificate: await issueCert(ca, user, { subject: identity, publicKey: RUST_SPKI }),
+      signature: RUST_SIG,
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('are rejected for a different content hash', async () => {
+    const identity = 'github.com/alice';
+    const res = await post({
+      package_name: '@alice/pkg',
+      version: '1.0.1',
+      content_hash: 'sha256:' + 'cd'.repeat(32),
+      identity,
+      certificate: await issueCert(ca, user, { subject: identity, publicKey: RUST_SPKI }),
+      signature: RUST_SIG,
+    });
+    expect(res.status).toBe(400);
+  });
+});

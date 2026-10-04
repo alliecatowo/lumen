@@ -232,14 +232,12 @@ describe('scoped routes and listing', () => {
 
 describe('oauth login flow', () => {
   const verifier = 'v'.repeat(43);
-  async function challenge(v: string) {
-    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)));
-    return btoa(String.fromCharCode(...d)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  }
   const login = async (extra: Record<string, unknown> = {}) =>
     call('/v1/auth/oidc/login', {
       method: 'POST',
-      body: JSON.stringify({ client_challenge: await challenge(verifier), ...extra }),
+      // Hard-coded SHA-256/base64url of `verifier`, as computed by the Rust CLI
+      // (rust/lumen-cli/src/wares/trust.rs login_challenge_matches_the_worker_algorithm).
+      body: JSON.stringify({ client_challenge: '7w_YNF9DSfIdPf_pRjSq646_kPr-2-o9NAl16JGghdM', ...extra }),
     });
 
   it('requires a client challenge and a safe redirect_uri', async () => {

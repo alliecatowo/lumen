@@ -374,6 +374,9 @@ pub struct BuildMetadata {
 pub struct LoginSession {
     pub session_id: String,
     pub auth_url: String,
+    /// Code to type into the browser page to confirm the login (shown in the terminal).
+    #[serde(default)]
+    pub user_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

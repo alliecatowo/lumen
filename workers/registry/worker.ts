@@ -14,6 +14,7 @@
 import { CertificateAuthority, IdentityClaims } from './src/ca';
 import { compareVersions, parseSemver, pickLatest } from './src/semver';
 import {
+  MAX_DEPS,
   MAX_DESCRIPTION_LEN,
   MAX_PROOF_BYTES,
   MAX_PUBLISH_BODY_BYTES,
@@ -161,6 +162,19 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return listPackages(env, corsHeaders);
     }
 
+    // Static registry layout read by the `wares` CLI (RegistryClient):
+    //   GET /index.json, /packages/<@ns/name>/index.json, /packages/<@ns/name>/<version>.json
+    if (path === '/v1/index.json' && method === 'GET') {
+      return globalIndex(url, env, corsHeaders);
+    }
+    if (path.startsWith('/v1/packages/') && method === 'GET') {
+      const route = parsePackagesPath(path.slice('/v1/packages/'.length));
+      if (!route) return json({ error: 'Invalid package path' }, corsHeaders, 400);
+      return route.version === null
+        ? packageIndexDoc(route.name, env, corsHeaders)
+        : versionMetadataDoc(route.name, route.version, env, corsHeaders);
+    }
+
     if (path === '/v1/search' && method === 'GET') {
       return searchPackages(url, env, corsHeaders);
     }
@@ -242,6 +256,24 @@ export function parseWaresPath(rest: string): WaresRoute | null {
     return { kind: 'proof', name, version: tail[0] };
   }
   return null;
+}
+
+/** Parse `<name>/index.json` or `<name>/<version>.json` below `/v1/packages/`. */
+export function parsePackagesPath(rest: string): { name: string; version: string | null } | null {
+  let segs: string[];
+  try {
+    segs = rest.split('/').filter((x) => x.length > 0).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  segs = segs.flatMap((x) => (x.startsWith('@') && x.includes('/') ? x.split('/') : [x]));
+  if (segs.length < 2) return null;
+  const name = segs[0].startsWith('@') ? `${segs[0]}/${segs[1]}` : segs[0];
+  const tail = segs.slice(segs[0].startsWith('@') ? 2 : 1);
+  if (!isValidReadName(name) || tail.length !== 1 || !tail[0].endsWith('.json')) return null;
+  const doc = tail[0].slice(0, -'.json'.length);
+  if (doc === 'index') return { name, version: null };
+  return parseSemver(doc) ? { name, version: doc } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +653,82 @@ async function getPackage(name: string, env: Env, corsHeaders: Headers_): Promis
   return new Response(index.body, { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
 }
 
+/** `GET /index.json`: the registry listing in the CLI's `GlobalIndex` shape. */
+async function globalIndex(url: URL, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const packages: any[] = [];
+  for (const key of await listIndexKeys(env)) {
+    const obj = await env.REGISTRY_BUCKET.get(key);
+    if (!obj) continue;
+    const data = (await obj.json()) as any;
+    packages.push({
+      name: nameFromKey(key),
+      latest: data.latest ?? null,
+      description: data.description ?? null,
+      updated_at: data.updatedAt ?? null,
+    });
+  }
+  return json(
+    {
+      name: 'wares',
+      version: '1',
+      updated_at: new Date().toISOString(),
+      package_count: packages.length,
+      packages,
+    },
+    corsHeaders,
+  );
+}
+
+/** `GET /packages/<name>/index.json`: the CLI's `RegistryPackageIndex`. */
+async function packageIndexDoc(name: string, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const obj = await env.REGISTRY_BUCKET.get(`wares/${name}/index.json`);
+  if (!obj) return json({ error: 'Package not found' }, corsHeaders, 404);
+  const data = (await obj.json()) as any;
+  const versions: string[] = data.versions || [];
+  return json(
+    {
+      name,
+      versions: [...versions].sort(compareVersions),
+      latest: data.latest ?? null,
+      yanked: data.yanked || {},
+      prereleases: versions.filter((v) => (parseSemver(v)?.prerelease.length ?? 0) > 0),
+      description: data.description ?? null,
+    },
+    corsHeaders,
+  );
+}
+
+/** `GET /packages/<name>/<version>.json`: the CLI's `RegistryVersionMetadata`. */
+async function versionMetadataDoc(name: string, version: string, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const obj = await env.REGISTRY_BUCKET.get(`wares/${name}/index.json`);
+  if (!obj) return json({ error: 'Package not found' }, corsHeaders, 404);
+  const data = (await obj.json()) as any;
+  const info = data.versionInfo?.[version];
+  // Versions published before the server recorded their hash cannot be verified, so
+  // they are not offered to installers.
+  if (!info?.shasum) return json({ error: 'Version not found' }, corsHeaders, 404);
+  return json(
+    {
+      name,
+      version,
+      deps: info.deps || {},
+      artifacts: [
+        {
+          kind: 'tgz',
+          // Relative to the registry base URL (…/api/v1); served by downloadPackage.
+          url: `wares/${name}/${version}`,
+          hash: `sha256:${info.shasum}`,
+          size: info.size ?? null,
+        },
+      ],
+      yanked: Boolean(data.yanked?.[version]),
+      published_at: info.publishedAt ?? null,
+      description: data.description ?? null,
+    },
+    corsHeaders,
+  );
+}
+
 async function downloadPackage(name: string, version: string, env: Env, corsHeaders: Headers_): Promise<Response> {
   const tarball = await env.REGISTRY_BUCKET.get(`wares/${name}/${version}.tarball`);
   if (!tarball) {
@@ -725,6 +833,22 @@ async function publishPackage(request: Request, env: Env, corsHeaders: Headers_)
     if (typeof body.proof !== 'object' || body.proof === null || proofJson.length > MAX_PROOF_BYTES) {
       return json({ error: 'proof must be a JSON object under 64 KiB' }, corsHeaders, 400);
     }
+  }
+
+  let deps: Record<string, string> = {};
+  if (body.deps !== undefined) {
+    const d = body.deps;
+    const entries = d && typeof d === 'object' && !Array.isArray(d) ? Object.entries(d) : null;
+    if (
+      !entries ||
+      entries.length > MAX_DEPS ||
+      !entries.every(
+        ([k, v]) => isValidReadName(k) && typeof v === 'string' && v.length > 0 && v.length <= 64,
+      )
+    ) {
+      return json({ error: 'deps must map valid package names to version constraints' }, corsHeaders, 400);
+    }
+    deps = Object.fromEntries(entries as [string, string][]);
   }
 
   const data = decodeBase64(tarball);
@@ -836,6 +960,7 @@ async function publishPackage(request: Request, env: Env, corsHeaders: Headers_)
       [version]: {
         shasum: digest,
         size: data.length,
+        deps,
         publishedAt: index.updatedAt,
         publisher: user.identity,
         logged: logIndex !== null,

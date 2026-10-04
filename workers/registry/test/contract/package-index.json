@@ -1,0 +1,13 @@
+{
+  "name": "@t/dep",
+  "versions": [
+    "1.0.0",
+    "1.1.0-rc.1"
+  ],
+  "latest": "1.0.0",
+  "yanked": {},
+  "prereleases": [
+    "1.1.0-rc.1"
+  ],
+  "description": "A test package"
+}

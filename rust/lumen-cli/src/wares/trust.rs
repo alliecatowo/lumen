@@ -114,6 +114,27 @@ pub struct TrustClient {
     registry_url: String,
     http_client: reqwest::Client,
     config: TrustConfig,
+    /// Ephemeral signing key paired with the certificate from `get_signing_certificate`.
+    /// It lives in memory only and is never written to disk.
+    ephemeral_key: Option<p256::ecdsa::SigningKey>,
+}
+
+/// Base64url (no padding) of `bytes`.
+fn b64url(bytes: &[u8]) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Registry API root without a trailing `/api/v1` (or `/v1`), so endpoints can be
+/// built as `{root}/api/v1/...` whether the configured URL includes the prefix or not.
+pub(crate) fn api_root(registry_url: &str) -> String {
+    let trimmed = registry_url.trim_end_matches('/');
+    for suffix in ["/api/v1", "/v1"] {
+        if let Some(root) = trimmed.strip_suffix(suffix) {
+            return root.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 impl TrustClient {
@@ -129,7 +150,13 @@ impl TrustClient {
             registry_url,
             http_client,
             config,
+            ephemeral_key: None,
         })
+    }
+
+    /// Full URL of a registry API endpoint, e.g. `endpoint("auth/cert")`.
+    fn endpoint(&self, path: &str) -> String {
+        format!("{}/api/v1/{}", api_root(&self.registry_url), path)
     }
 
     /// Check if we're authenticated with OIDC.
@@ -152,18 +179,23 @@ impl TrustClient {
             provider.name()
         );
 
-        // Step 1: Request a login session from the registry (use registry callback, not localhost)
-        let login_url = format!(
-            "{}/api/v1/auth/oidc/login",
-            self.registry_url.trim_end_matches('/')
-        );
+        // Step 1: Request a login session. The CLI keeps a random verifier and sends only
+        // its hash; the registry hands the token to whoever proves they hold it.
+        let login_url = self.endpoint("auth/oidc/login");
+        let mut verifier_bytes = [0u8; 32];
+        {
+            use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+            OsRng.fill_bytes(&mut verifier_bytes);
+        }
+        let client_verifier = b64url(&verifier_bytes);
+        let client_challenge = b64url(&Sha256::digest(client_verifier.as_bytes()));
 
         let resp = self
             .http_client
             .post(&login_url)
             .json(&serde_json::json!({
-                "provider": provider
-                // No redirect_uri - use registry's default callback
+                "provider": provider,
+                "client_challenge": client_challenge,
             }))
             .send()
             .await?;
@@ -186,6 +218,12 @@ impl TrustClient {
         );
         println!("  If the browser doesn't open, visit:",);
         println!("  {}", colors::bold(&login_session.auth_url));
+        if let Some(code) = &login_session.user_code {
+            println!(
+                "  When asked, enter this code in the browser: {}",
+                colors::bold(code)
+            );
+        }
 
         if let Err(e) = open::that(&login_session.auth_url) {
             eprintln!("{} Could not open browser: {}", colors::yellow("!"), e);
@@ -195,7 +233,7 @@ impl TrustClient {
         println!("{} Waiting for authentication...", colors::gray("⏳"));
         println!("  (Complete the authorization in your browser)",);
 
-        let token = self.poll_for_token(&session_id).await?;
+        let token = self.poll_for_token(&session_id, &client_verifier).await?;
 
         // Step 4: Store credentials
         let identity = token.identity.clone();
@@ -221,18 +259,27 @@ impl TrustClient {
     }
 
     /// Poll for OAuth token completion.
-    async fn poll_for_token(&self, session_id: &str) -> Result<OAuthToken, TrustError> {
+    async fn poll_for_token(
+        &self,
+        session_id: &str,
+        client_verifier: &str,
+    ) -> Result<OAuthToken, TrustError> {
         let poll_url = format!(
-            "{}/api/v1/auth/oidc/token?session_id={}",
-            self.registry_url.trim_end_matches('/'),
-            session_id
+            "{}?session_id={}",
+            self.endpoint("auth/oidc/token"),
+            urlencoding::encode(session_id)
         );
 
-        for _ in 0..60 {
-            // Poll for up to 5 minutes
+        for _ in 0..120 {
+            // Poll for up to 10 minutes (the registry session lifetime)
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-            let resp = self.http_client.get(&poll_url).send().await?;
+            let resp = self
+                .http_client
+                .get(&poll_url)
+                .header("X-Client-Verifier", client_verifier)
+                .send()
+                .await?;
 
             if resp.status() == reqwest::StatusCode::OK {
                 let token: OAuthToken = resp.json().await?;
@@ -240,7 +287,10 @@ impl TrustClient {
             }
 
             if resp.status() != reqwest::StatusCode::ACCEPTED {
-                return Err(TrustError::Auth("Authentication failed".to_string()));
+                return Err(TrustError::Auth(format!(
+                    "Authentication failed ({})",
+                    resp.status()
+                )));
             }
         }
 
@@ -259,19 +309,13 @@ impl TrustClient {
         Ok(())
     }
 
-    /// Get an ephemeral signing certificate.
+    /// Get an ephemeral signing certificate for a freshly generated P-256 key.
+    ///
+    /// The private key never leaves this process, so certificates are not cached across
+    /// runs: each publish gets its own short-lived key and certificate.
     pub async fn get_signing_certificate(&mut self) -> Result<EphemeralCertificate, TrustError> {
-        // Check cache first
-        if let Some(creds) = self.config.get_oidc(&self.registry_url) {
-            if let Some(cert) = self.config.get_cached_cert(&creds.identity) {
-                if cert.remaining() > Duration::minutes(5) {
-                    println!("{} Using cached signing certificate", colors::gray("→"));
-                    return Ok(cert.clone());
-                }
-            }
-        }
+        use p256::pkcs8::EncodePublicKey;
 
-        // Need to get a new certificate
         let oidc_token = self.get_oidc_token().await?;
 
         println!(
@@ -279,16 +323,19 @@ impl TrustClient {
             colors::cyan("→")
         );
 
-        let cert_url = format!(
-            "{}/api/v1/auth/cert",
-            self.registry_url.trim_end_matches('/')
-        );
+        let signing_key =
+            p256::ecdsa::SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let public_key_der = signing_key
+            .verifying_key()
+            .to_public_key_der()
+            .map_err(|e| TrustError::Cert(format!("Failed to encode public key: {}", e)))?;
+
         let resp = self
             .http_client
-            .post(&cert_url)
+            .post(self.endpoint("auth/cert"))
             .json(&serde_json::json!({
                 "oidc_token": oidc_token,
-                "public_key": self.generate_ephemeral_key()?
+                "public_key": STANDARD.encode(public_key_der.as_bytes())
             }))
             .send()
             .await?;
@@ -302,17 +349,15 @@ impl TrustClient {
         }
 
         let cert: EphemeralCertificate = resp.json().await?;
+        self.ephemeral_key = Some(signing_key);
 
         println!(
             "{} Got certificate valid for {}",
             colors::green("✓"),
             humantime::format_duration(std::time::Duration::from_secs(
-                cert.remaining().num_seconds() as u64
+                cert.remaining().num_seconds().max(0) as u64
             ))
         );
-
-        self.config.cache_cert(cert.clone());
-        self.config.save()?;
 
         Ok(cert)
     }
@@ -333,10 +378,7 @@ impl TrustClient {
 
         // Token expired or no access token - try to refresh
         if let Some(refresh_token) = &creds.refresh_token {
-            let refresh_url = format!(
-                "{}/api/v1/auth/oidc/refresh",
-                self.registry_url.trim_end_matches('/')
-            );
+            let refresh_url = self.endpoint("auth/oidc/refresh");
             let resp = self
                 .http_client
                 .post(&refresh_url)
@@ -361,22 +403,13 @@ impl TrustClient {
         ))
     }
 
-    /// Generate an ephemeral key pair for signing.
-    fn generate_ephemeral_key(&self) -> Result<String, TrustError> {
-        // In production, generate actual ECDSA P-256 key pair
-        // For now, return a placeholder
-        use rand::Rng;
-        let mut key = [0u8; 32];
-        rand::rng().fill_bytes(&mut key);
-        Ok(STANDARD.encode(key))
-    }
-
     /// Sign and publish a package.
     pub async fn publish_package(
         &mut self,
         package_name: &str,
         version: &str,
         content: &[u8],
+        deps: &std::collections::BTreeMap<String, String>,
         provenance: Option<SlsaProvenance>,
     ) -> Result<PackageSignature, TrustError> {
         // Get signing certificate
@@ -388,7 +421,7 @@ impl TrustClient {
         let content_hash = format!("sha256:{}", hex::encode(hasher.finalize()));
 
         // Sign the content
-        let signature = self.sign_with_cert(&cert, package_name, version, &content_hash)?;
+        let signature = self.sign_content_hash(&content_hash)?;
 
         // Build package signature
         let pkg_sig = PackageSignature {
@@ -411,7 +444,8 @@ impl TrustClient {
         );
 
         // Upload to registry
-        let publish_url = format!("{}/v1/wares", self.registry_url.trim_end_matches('/'));
+        let publish_url = self.endpoint("wares");
+        let access_token = self.get_oidc_token().await?;
 
         // Calculate shasum for registry
         let shasum = pkg_sig
@@ -423,12 +457,14 @@ impl TrustClient {
         let resp = self
             .http_client
             .put(&publish_url)
+            .bearer_auth(&access_token)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
                 "name": package_name,
                 "version": version,
                 "tarball": STANDARD.encode(content),
                 "shasum": shasum,
+                "deps": deps,
                 "signature": {
                     "identity": pkg_sig.certificate.identity_str(),
                     "signature": pkg_sig.signature,
@@ -446,29 +482,17 @@ impl TrustClient {
         Ok(pkg_sig)
     }
 
-    /// Sign data with the ephemeral certificate.
-    fn sign_with_cert(
-        &self,
-        cert: &EphemeralCertificate,
-        package: &str,
-        version: &str,
-        hash: &str,
-    ) -> Result<String, TrustError> {
-        // In production, this would use the ephemeral private key
-        // to sign the canonical message
-        let message = format!(
-            "wares:{}:{}:{}:{}",
-            package,
-            version,
-            hash,
-            Utc::now().to_rfc3339()
-        );
+    /// ECDSA P-256 / SHA-256 signature (IEEE P1363, base64) over the content hash string
+    /// with the ephemeral key of the current certificate: exactly what the transparency
+    /// log verifies against the public key in the certificate.
+    fn sign_content_hash(&self, content_hash: &str) -> Result<String, TrustError> {
+        use p256::ecdsa::{signature::Signer, Signature};
 
-        // Placeholder signature
-        let mut hasher = Sha256::new();
-        hasher.update(message.as_bytes());
-        hasher.update(cert.cert_id.as_bytes());
-        Ok(STANDARD.encode(hasher.finalize()))
+        let key = self.ephemeral_key.as_ref().ok_or_else(|| {
+            TrustError::Cert("no ephemeral signing key; request a certificate first".to_string())
+        })?;
+        let signature: Signature = key.sign(content_hash.as_bytes());
+        Ok(STANDARD.encode(signature.to_bytes()))
     }
 
     /// Verify a package signature against policy.
@@ -879,6 +903,84 @@ fn extract_query_param(request: &str, name: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+    use p256::ecdsa::{signature::Verifier, Signature, SigningKey, VerifyingKey};
+    use p256::pkcs8::EncodePublicKey;
+
+    /// Fixed key so the signature is reproducible (RFC 6979) and can be checked from JavaScript.
+    fn fixed_key() -> SigningKey {
+        SigningKey::from_bytes((&[7u8; 32]).into()).unwrap()
+    }
+
+    const HASH: &str = "sha256:abababababababababababababababababababababababababababababababab";
+
+    #[test]
+    fn api_root_strips_the_version_prefix() {
+        assert_eq!(api_root("https://r.example/api/v1"), "https://r.example");
+        assert_eq!(api_root("https://r.example/api/v1/"), "https://r.example");
+        assert_eq!(api_root("https://r.example/v1"), "https://r.example");
+        assert_eq!(api_root("https://r.example"), "https://r.example");
+        assert_eq!(api_root("http://127.0.0.1:8787/"), "http://127.0.0.1:8787");
+    }
+
+    #[test]
+    fn login_challenge_matches_the_worker_algorithm() {
+        // base64url(sha256(verifier)) of 43 'v's, the same vector asserted in
+        // workers/registry/test/worker.test.ts.
+        let verifier = "v".repeat(43);
+        assert_eq!(
+            b64url(&Sha256::digest(verifier.as_bytes())),
+            "7w_YNF9DSfIdPf_pRjSq646_kPr-2-o9NAl16JGghdM"
+        );
+    }
+
+    #[test]
+    fn content_hash_signatures_verify_and_are_p1363() {
+        let mut client = TrustClient {
+            registry_url: "https://r.example/api/v1".into(),
+            http_client: reqwest::Client::new(),
+            config: TrustConfig::default(),
+            ephemeral_key: None,
+        };
+        assert!(client.sign_content_hash(HASH).is_err(), "no key yet");
+
+        let key = fixed_key();
+        client.ephemeral_key = Some(key.clone());
+        let sig_b64 = client.sign_content_hash(HASH).unwrap();
+        let raw = STANDARD.decode(&sig_b64).unwrap();
+        assert_eq!(raw.len(), 64, "IEEE P1363 r||s");
+
+        let verifying = VerifyingKey::from(&key);
+        let sig = Signature::from_slice(&raw).unwrap();
+        assert!(verifying.verify(HASH.as_bytes(), &sig).is_ok());
+        assert!(verifying.verify(b"sha256:other", &sig).is_err());
+    }
+
+    /// The exact bytes the log worker's JavaScript test verifies
+    /// (workers/transparency-log/test/log.test.js, "Rust CLI vector").
+    #[test]
+    fn matches_the_vector_checked_by_the_transparency_log_tests() {
+        let key = fixed_key();
+        let spki = STANDARD.encode(key.verifying_key().to_public_key_der().unwrap().as_bytes());
+        let client = TrustClient {
+            registry_url: String::new(),
+            http_client: reqwest::Client::new(),
+            config: TrustConfig::default(),
+            ephemeral_key: Some(key),
+        };
+        assert_eq!(
+            spki,
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHhhTL9R1TALzBB2cdc6zO4P/2BrHzk/ogsyxyYvFiW6kbDEcTi/0DdlqNlPm5FRF0y3+SG7O11x6kMahiIHAow=="
+        );
+        assert_eq!(
+            client.sign_content_hash(HASH).unwrap(),
+            "Py/XmCqnUGb3F/wUH8yGNBQkdScEcwWumugFxXVpg+k3XfLz+/485M5dd0t9XwXTVmYgJRvHQsyG6QBFfzmn9Q=="
+        );
+    }
 }
 
 /// Whether `identity` matches the policy `pattern`. The pattern is anchored at both

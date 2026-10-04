@@ -1778,7 +1778,7 @@ pub fn pack() {
 
 /// File name for a packed archive. Scoped names (`@ns/name`) contain a slash, so
 /// the scope is folded into the name: `@ns/name` + `0.1.0` -> `ns-name-0.1.0.tgz`.
-fn tarball_file_name(package_name: &str, version: &str) -> String {
+pub(crate) fn tarball_file_name(package_name: &str, version: &str) -> String {
     format!(
         "{}-{}.tgz",
         package_name.trim_start_matches('@').replace('/', "-"),

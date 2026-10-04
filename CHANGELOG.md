@@ -5,6 +5,26 @@ All notable changes to the Lumen project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1]
+
+### Fixed
+
+- JIT: only cells proven equivalent to the interpreter are compiled (Int/Bool, all callees eligible);
+  overflow, division by zero, bad shifts and stack exhaustion fall back to the interpreter. Fixes wrong
+  results from calls to uncompiled cells, Bool results printing as Int, `//` and `%` semantics, SIGILL on
+  `x / 0`, Float-function crashes and native stack overflow. `LUMEN_JIT=0` disables the JIT.
+- Loop-invariant hoisting no longer clobbers registers in nested loops (`fannkuch` hang).
+- `map`/`filter` with a lambda no longer panics; `i64::MIN // -1` and `% -1` report overflow.
+- Typechecker: `let` is immutable (use `let mut`), block scoping, call arity, record constructor fields,
+  union assignability uses the subset rule. **Programs that reassigned a plain `let` must add `mut`.**
+- `a.b = v` / `a.b += v` field assignment was silently dropped; `defer` in an untaken branch ran anyway;
+  invalid `break`/`continue` is an error and `break value` works; aliased imports work at runtime.
+- Parser/lexer: nesting limit with a clean error, multi-line strings in expressions, CRLF files, `observe(...)`
+  and `agent`/`confirm` as ordinary names, negative/null patterns, `t.0.1`, chained comparisons, map spread,
+  huge list/map literals, record and parameter defaults, named arguments bind by name.
+- Runtime: durable atomic caches, working `Sender::close`, HTTP timeouts, builtin argument clamping, snapshot
+  size limits, call depth limit raised to 100000.
+
 ## [0.6.0]
 
 ### Changed

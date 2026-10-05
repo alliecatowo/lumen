@@ -296,6 +296,12 @@ impl TrustClient {
                 return Ok(token);
             }
 
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(TrustError::Auth(
+                    "Login session expired or not found. Run 'wares login' again.".to_string(),
+                ));
+            }
+
             if resp.status() != reqwest::StatusCode::ACCEPTED {
                 return Err(TrustError::Auth(format!(
                     "Authentication failed ({})",

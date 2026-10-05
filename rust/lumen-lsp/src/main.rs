@@ -697,8 +697,9 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: serde_json::to_value(result).ok(),
-                    error: None,
+                    response_result: Ok(
+                        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+                    ),
                 };
                 send_response(connection, response);
             }
@@ -718,8 +719,9 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: serde_json::to_value(result).ok(),
-                    error: None,
+                    response_result: Ok(
+                        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+                    ),
                 };
                 send_response(connection, response);
             }
@@ -734,8 +736,9 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: serde_json::to_value(result).ok(),
-                    error: None,
+                    response_result: Ok(
+                        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+                    ),
                 };
                 send_response(connection, response);
             }
@@ -750,8 +753,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: Some(serde_json::to_value(result).unwrap()),
-                    error: None,
+                    response_result: Ok(serde_json::to_value(result).unwrap()),
                 };
                 send_response(connection, response);
             }
@@ -766,8 +768,9 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: serde_json::to_value(result).ok(),
-                    error: None,
+                    response_result: Ok(
+                        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+                    ),
                 };
                 send_response(connection, response);
             }
@@ -782,8 +785,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: Some(serde_json::to_value(result).unwrap()),
-                    error: None,
+                    response_result: Ok(serde_json::to_value(result).unwrap()),
                 };
                 send_response(connection, response);
             }
@@ -798,8 +800,9 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: serde_json::to_value(result).ok(),
-                    error: None,
+                    response_result: Ok(
+                        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+                    ),
                 };
                 send_response(connection, response);
             }
@@ -814,8 +817,9 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: serde_json::to_value(result).ok(),
-                    error: None,
+                    response_result: Ok(
+                        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+                    ),
                 };
                 send_response(connection, response);
             }
@@ -834,8 +838,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             };
             let response = Response {
                 id: req.id.clone(),
-                result,
-                error: None,
+                response_result: Ok(result.unwrap_or(serde_json::Value::Null)),
             };
             send_response(connection, response);
         }
@@ -849,8 +852,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: Some(serde_json::to_value(result).unwrap()),
-                    error: None,
+                    response_result: Ok(serde_json::to_value(result).unwrap()),
                 };
                 send_response(connection, response);
             }
@@ -867,8 +869,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
 
                 let response = Response {
                     id: req.id.clone(),
-                    result: Some(serde_json::to_value(result).unwrap()),
-                    error: None,
+                    response_result: Ok(serde_json::to_value(result).unwrap()),
                 };
                 send_response(connection, response);
             }
@@ -876,16 +877,14 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
         request::References::METHOD => {
             let response = Response {
                 id: req.id.clone(),
-                result: Some(serde_json::to_value(Vec::<Location>::new()).unwrap()),
-                error: None,
+                response_result: Ok(serde_json::to_value(Vec::<Location>::new()).unwrap()),
             };
             send_response(connection, response);
         }
         request::WorkspaceSymbolRequest::METHOD => {
             let response = Response {
                 id: req.id.clone(),
-                result: Some(serde_json::to_value(Vec::<SymbolInformation>::new()).unwrap()),
-                error: None,
+                response_result: Ok(serde_json::to_value(Vec::<SymbolInformation>::new()).unwrap()),
             };
             send_response(connection, response);
         }
@@ -903,8 +902,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 };
             let response = Response {
                 id: req.id.clone(),
-                result: Some(serde_json::to_value(result).unwrap()),
-                error: None,
+                response_result: Ok(serde_json::to_value(result).unwrap()),
             };
             send_response(connection, response);
         }
@@ -922,8 +920,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             };
             let response = Response {
                 id: req.id.clone(),
-                result: Some(serde_json::to_value(result).unwrap()),
-                error: None,
+                response_result: Ok(serde_json::to_value(result).unwrap()),
             };
             send_response(connection, response);
         }

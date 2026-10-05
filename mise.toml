@@ -1,7 +1,63 @@
 [tools]
-node = "latest"
-rust = "latest"
+node = "22"
+rust = { version = "stable", components = "rustfmt,clippy", targets = "wasm32-unknown-unknown" }
 python = "latest"
 go = "latest"
 cmake = "latest"
 zig = "latest"
+
+# --- CI tasks (.github/workflows/ci.yml runs these through jdx/mise-action) ---
+# Tool versions live in [tools] above; CI never installs toolchains any other way.
+
+[tasks.check]
+description = "cargo check for the workspace and the wasm crate"
+run = [
+  "cargo check --workspace",
+  "cargo check --manifest-path rust/lumen-wasm/Cargo.toml --target wasm32-unknown-unknown",
+]
+
+[tasks.test]
+description = "Run the workspace tests"
+run = "cargo test --workspace"
+
+[tasks.fmt]
+description = "Check formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks.clippy]
+description = "Lint with zero warnings"
+run = "cargo clippy --workspace -- -D warnings"
+
+[tasks.examples]
+description = "Type-check every example program"
+run = "cargo build --release && sh scripts/check-examples.sh"
+
+[tasks.lang-ref]
+description = "Verify the language reference generates"
+run = "cargo run --release --bin lumen -- lang-ref > /dev/null"
+
+[tasks.diag-latency]
+description = "LSP diagnostic latency gate"
+env = { LUMEN_DIAG_BENCH_ITERATIONS = "120", LUMEN_DIAG_BENCH_WARMUP_ITERATIONS = "20", LUMEN_DIAG_BENCH_THRESHOLD_METRIC = "p95", LUMEN_DIAG_BENCH_THRESHOLD_MS = "8.0" }
+run = "cargo run -p lumen-lsp --bin diag_latency_bench"
+
+[tasks.audit]
+description = "RUSTSEC advisories for the workspace and the wasm crate"
+run = ["cargo audit", "cargo audit --file rust/lumen-wasm/Cargo.lock"]
+
+[tasks.wasm-test]
+description = "Test and check lumen-wasm (excluded from the workspace)"
+run = [
+  "cargo test --locked --manifest-path rust/lumen-wasm/Cargo.toml",
+  "cargo check --locked --manifest-path rust/lumen-wasm/Cargo.toml --target wasm32-unknown-unknown",
+]
+
+[tasks.vscode]
+description = "Type-check and test the VS Code extension"
+dir = "editors/vscode"
+run = ["npm ci", "npx tsc --noEmit -p .", "node --test \"test/*.test.js\""]
+
+[tasks.worker-test]
+description = "Test one Cloudflare worker: mise run worker-test registry"
+usage = 'arg "<worker>" help="registry or transparency-log"'
+run = ["npm --prefix workers/${usage_worker} ci", "npm --prefix workers/${usage_worker} test"]

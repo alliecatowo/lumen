@@ -34,21 +34,21 @@ jobs:
       - name: Skip notice
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
         run: echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the lumen-lang.com deploy"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          install_args: rust node
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
       - name: Build lumen-wasm for the playground
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: wasm-pack build rust/lumen-wasm --target web --release --out-dir ../../docs/public/wasm
-      - uses: actions/setup-node@v7
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: docs/package-lock.json
+          install_args: node
       - name: Build docs
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: npm ci && npm run docs:build
@@ -67,14 +67,12 @@ jobs:
       - name: Skip notice
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
         run: echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the wares.lumen-lang.com deploy"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-      - uses: actions/setup-node@v7
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: wares-site/package-lock.json
+          install_args: node
       - name: Build
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: npm ci && npm run generate

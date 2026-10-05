@@ -1542,9 +1542,8 @@ async fn cmd_policy_set(registry_url: &str, policy: TrustPolicy) {
 fn read_package_deps() -> Result<std::collections::BTreeMap<String, String>, String> {
     let content = std::fs::read_to_string("lumen.toml")
         .map_err(|_| "No lumen.toml found. Run 'wares init' first.".to_string())?;
-    let doc: toml::Value = content
-        .parse()
-        .map_err(|e| format!("Failed to parse lumen.toml: {}", e))?;
+    let doc: toml::Value =
+        toml::from_str(&content).map_err(|e| format!("Failed to parse lumen.toml: {}", e))?;
 
     let mut deps = std::collections::BTreeMap::new();
     let Some(table) = doc.get("dependencies").and_then(|d| d.as_table()) else {
@@ -1578,9 +1577,8 @@ fn read_package_info() -> Result<(String, String), String> {
     let content = std::fs::read_to_string("lumen.toml")
         .map_err(|_| "No lumen.toml found. Run 'wares init' first.".to_string())?;
 
-    let doc: toml::Value = content
-        .parse()
-        .map_err(|e| format!("Failed to parse lumen.toml: {}", e))?;
+    let doc: toml::Value =
+        toml::from_str(&content).map_err(|e| format!("Failed to parse lumen.toml: {}", e))?;
 
     let package = doc
         .get("package")

@@ -288,8 +288,7 @@ pub enum AuditError {
 /// Supports both v1 (with `[metadata]`) and v2/v3 (with `checksum` per package) formats.
 pub fn parse_cargo_lock(content: &str) -> Result<Vec<ParsedDependency>, AuditError> {
     // Cargo.lock is a TOML file with [[package]] entries
-    let parsed: toml::Value = content
-        .parse()
+    let parsed: toml::Value = toml::from_str(content)
         .map_err(|e| AuditError::LockfileParseError(format!("Invalid TOML: {}", e)))?;
 
     let packages = parsed

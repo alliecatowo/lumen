@@ -44,12 +44,27 @@ impl Default for ClientConfig {
     }
 }
 
+/// Build the HTTP client from a [`ClientConfig`]: request timeout and optional extra CA.
+fn build_http_client(config: &ClientConfig) -> Result<reqwest::blocking::Client, String> {
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(config.timeout_secs.max(1)));
+    if let Some(path) = &config.ca_cert_path {
+        let pem = std::fs::read(path)
+            .map_err(|e| format!("failed to read CA certificate {}: {}", path.display(), e))?;
+        let cert = reqwest::Certificate::from_pem(&pem)
+            .map_err(|e| format!("invalid CA certificate {}: {}", path.display(), e))?;
+        builder = builder.add_root_certificate(cert);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
 impl RegistryClient {
     /// Create a new registry client.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
-            client: reqwest::blocking::Client::new(),
+            client: build_http_client(&ClientConfig::default())
+                .unwrap_or_else(|_| reqwest::blocking::Client::new()),
             config: ClientConfig::default(),
         }
     }
@@ -58,7 +73,10 @@ impl RegistryClient {
     pub fn with_config(base_url: impl Into<String>, config: ClientConfig) -> Self {
         Self {
             base_url: base_url.into(),
-            client: reqwest::blocking::Client::new(),
+            client: build_http_client(&config).unwrap_or_else(|e| {
+                eprintln!("warning: {e}; using default HTTP client settings");
+                reqwest::blocking::Client::new()
+            }),
             config,
         }
     }
@@ -367,4 +385,28 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
         hasher.update(&buffer[..n]);
     }
     Ok(format!("sha256:{}", hex_encode(&hasher.finalize())))
+}
+
+#[cfg(test)]
+mod client_config_tests {
+    use super::*;
+
+    #[test]
+    fn builds_with_timeout_only() {
+        let cfg = ClientConfig {
+            timeout_secs: 5,
+            ..ClientConfig::default()
+        };
+        assert!(build_http_client(&cfg).is_ok());
+    }
+
+    #[test]
+    fn missing_ca_file_is_an_error() {
+        let cfg = ClientConfig {
+            ca_cert_path: Some("/nonexistent/ca.pem".into()),
+            ..ClientConfig::default()
+        };
+        let err = build_http_client(&cfg).unwrap_err();
+        assert!(err.contains("failed to read CA certificate"), "{err}");
+    }
 }

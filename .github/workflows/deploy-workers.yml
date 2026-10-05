@@ -29,11 +29,9 @@ jobs:
         working-directory: workers/${{ matrix.worker }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: workers/${{ matrix.worker }}/package-lock.json
+          install_args: node
       - run: npm ci
       - run: npm test
 
@@ -59,11 +57,9 @@ jobs:
       - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: workers/${{ matrix.worker }}/package-lock.json
+          install_args: node
       # wrangler comes from the worker's own lockfile instead of an unpinned global install.
       - name: Install dependencies
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}

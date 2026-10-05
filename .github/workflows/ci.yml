@@ -18,7 +18,9 @@
 #
 # Adding a new CI job:
 #   - Add a new job below following the existing pattern.
-#   - Use dtolnay/rust-toolchain@stable and Swatinem/rust-cache@v2.
+#   - Toolchains come from mise.toml via jdx/mise-action; put the commands in a
+#     mise task and run it with `mise run <task>`. Do not use setup-node or
+#     rust-toolchain.
 #   - Document the job's purpose in this header block.
 #
 # =============================================================================
@@ -39,9 +41,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Compilation check (cross-platform)
-  # ---------------------------------------------------------------------------
   check:
     name: Check
     runs-on: ${{ matrix.os }}
@@ -50,17 +49,12 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
+          install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: cargo check --workspace
-      - run: cargo check --manifest-path rust/lumen-wasm/Cargo.toml --target wasm32-unknown-unknown
+      - run: mise run check
 
-  # ---------------------------------------------------------------------------
-  # Test suite (cross-platform)
-  # ---------------------------------------------------------------------------
   test:
     name: Test
     runs-on: ${{ matrix.os }}
@@ -69,156 +63,102 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
+          install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: cargo test --workspace
+      - run: mise run test
 
-  # ---------------------------------------------------------------------------
-  # Formatting (rustfmt)
-  # ---------------------------------------------------------------------------
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+          install_args: rust
+      - run: mise run fmt
 
-  # ---------------------------------------------------------------------------
-  # Lint (clippy) — zero warnings policy
-  # ---------------------------------------------------------------------------
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
-          components: clippy
+          install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: cargo clippy --workspace -- -D warnings
+      - run: mise run clippy
 
-  # ---------------------------------------------------------------------------
-  # Example programs type-check
-  # ---------------------------------------------------------------------------
   examples:
     name: Examples
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
+          install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: cargo build --release
-      - run: |
-          failed=0
-          for f in examples/*.lm.md; do
-            echo "Checking $f..."
-            cargo run --release --bin lumen -- check "$f" || failed=1
-          done
-          exit $failed
+      - run: mise run examples
 
-  # ---------------------------------------------------------------------------
-  # Language reference generation
-  # ---------------------------------------------------------------------------
   lang-ref:
     name: Language Reference
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
+          install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Verify lang-ref generates
-        run: cargo run --release --bin lumen -- lang-ref > /dev/null
+      - run: mise run lang-ref
 
-  # ---------------------------------------------------------------------------
-  # LSP diagnostic latency gate (performance regression check)
-  # ---------------------------------------------------------------------------
   diag-latency-gate:
     name: LSP Diag Latency Gate
     runs-on: ubuntu-latest
-    env:
-      LUMEN_DIAG_BENCH_ITERATIONS: "120"
-      LUMEN_DIAG_BENCH_WARMUP_ITERATIONS: "20"
-      LUMEN_DIAG_BENCH_THRESHOLD_METRIC: "p95"
-      LUMEN_DIAG_BENCH_THRESHOLD_MS: "8.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
+          install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: cargo run -p lumen-lsp --bin diag_latency_bench
+      - run: mise run diag-latency
 
-  # ---------------------------------------------------------------------------
-  # Dependency advisories (RUSTSEC). Vulnerabilities fail the job; unmaintained
-  # or unsound warnings (bincode, memmap2) are reported but allowed.
-  # ---------------------------------------------------------------------------
   audit:
     name: Cargo Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: rust
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cargo-audit
-      - run: cargo audit
+      - run: mise run audit
 
-  # ---------------------------------------------------------------------------
-  # VS Code extension type-check (Dependabot majors have broken tsc before)
-  # ---------------------------------------------------------------------------
   vscode-extension:
     name: VS Code Extension (tsc)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: editors/vscode
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: editors/vscode/package-lock.json
-      - run: npm ci
-      - run: npx tsc --noEmit -p .
-      - run: node --test "test/*.test.js"
+          install_args: node
+      - run: mise run vscode
 
-  # ---------------------------------------------------------------------------
-  # Cloudflare worker unit tests (run before deploy-workers.yml can ship them)
-  # ---------------------------------------------------------------------------
   workers:
     name: Workers (${{ matrix.worker }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
         worker: [registry, transparency-log]
-    defaults:
-      run:
-        working-directory: workers/${{ matrix.worker }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: workers/${{ matrix.worker }}/package-lock.json
-      - run: npm ci
-      - run: npm test
+          install_args: node
+      - run: mise run worker-test ${{ matrix.worker }}
 
-  # ---------------------------------------------------------------------------
-  # Installer script: shellcheck plus an end-to-end test against a fake release
-  # (checksum verification, tampering, 404s, cleanup)
-  # ---------------------------------------------------------------------------
   install-script:
     name: install.sh (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -232,25 +172,15 @@ jobs:
         run: shellcheck --severity=warning scripts/install.sh scripts/tests/install_test.sh scripts/bump-version.sh
       - run: sh scripts/tests/install_test.sh
 
-  # ---------------------------------------------------------------------------
-  # lumen-wasm is excluded from the workspace, so it needs its own test and
-  # audit run (and a committed Cargo.lock)
-  # ---------------------------------------------------------------------------
   wasm:
     name: lumen-wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
+          install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rust/lumen-wasm
-      - run: cargo test --locked --manifest-path rust/lumen-wasm/Cargo.toml
-      - run: cargo check --locked --manifest-path rust/lumen-wasm/Cargo.toml --target wasm32-unknown-unknown
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
-        with:
-          tool: cargo-audit
-      - run: cargo audit --file rust/lumen-wasm/Cargo.lock
+      - run: mise run wasm-test

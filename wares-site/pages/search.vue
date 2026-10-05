@@ -60,11 +60,13 @@
         <svg class="w-20 h-20 mx-auto text-lumen-textMuted mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
         </svg>
-        <h3 class="text-xl font-semibold text-lumen-text mb-2">No wares found</h3>
+        <h3 class="text-xl font-semibold text-lumen-text mb-2">
+          {{ searchQuery ? 'No wares found' : 'Registry preview' }}
+        </h3>
         <p class="text-lumen-textMuted mb-6">
-          Try a different search term or browse all packages
+          {{ searchQuery ? 'Try a different search term or browse all packages' : 'The registry is in preview. The first official packages are coming soon.' }}
         </p>
-        <NuxtLink to="/search" class="btn-primary">
+        <NuxtLink v-if="searchQuery" to="/search" class="btn-primary">
           View All
         </NuxtLink>
       </div>

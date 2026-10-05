@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Local cells (cells declared inside a cell body) are now typechecked, and only code inside the declaring cell can name them.
+- `type T = U where ...` is a parse error instead of silently dropping the constraint.
+- `RegistryClient::with_config` applies the configured timeout and extra CA certificate.
+- Dependency updates: keyring 4, toml 1, lsp-server 0.10.
+
 ## [0.6.3] - 2026-10-04
 
 ### Changed (breaking)

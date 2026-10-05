@@ -2536,8 +2536,15 @@ impl Parser {
         self.expect(&TokenKind::Assign)?;
         let type_expr = self.parse_type()?;
         if matches!(self.peek_kind(), TokenKind::Where) {
-            self.advance();
-            let _ = self.parse_expr(0)?;
+            // A refinement on an alias used to be parsed and silently dropped, so the
+            // constraint was never enforced. Refuse it instead of pretending it works.
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: "where".into(),
+                expected: "end of type alias (refinement clauses on type aliases are not supported; put the constraint on a record field)".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
         }
         let span = start.merge(type_expr.span());
         Ok(TypeAliasDef {
@@ -6930,6 +6937,22 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         parser.parse_program(vec![])
+    }
+
+    #[test]
+    fn where_on_type_alias_is_rejected_not_dropped() {
+        let parse_errors = |src: &str| {
+            let mut lexer = Lexer::new(src, 1, 0);
+            let tokens = lexer.tokenize().unwrap();
+            Parser::new(tokens).parse_program_with_recovery(vec![]).1
+        };
+        let errs = parse_errors("type Positive = Int where self > 0\n");
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ParseError::Unexpected { found, .. } if found == "where")),
+            "{errs:?}"
+        );
+        assert!(parse_errors("type Id = Int\n").is_empty());
     }
 
     #[test]

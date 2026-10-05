@@ -332,6 +332,9 @@ pub struct SymbolTable {
     /// Private names (cell/type) skipped by wildcard imports, mapped to their module. Used to
     /// report a use of one as a private import instead of an undefined name.
     pub private_imports: HashMap<String, String>,
+    /// Local (nested) cells mapped to the top-level cell that declares them. Local cells are
+    /// lifted to module level for lowering, but only code inside the declaring cell may name them.
+    pub local_cell_owners: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -498,6 +501,7 @@ impl SymbolTable {
             traits: HashMap::new(),
             impls: Vec::new(),
             consts: HashMap::new(),
+            local_cell_owners: HashMap::new(),
             private_imports: HashMap::new(),
         }
     }
@@ -556,6 +560,7 @@ pub fn resolve_with_base(
 /// definitions. This allows them to be referenced within the enclosing cell
 /// and supports nested function/type patterns.
 fn register_local_defs_in_body(
+    owner: &str,
     body: &[Stmt],
     table: &mut SymbolTable,
     errors: &mut Vec<ResolveError>,
@@ -626,6 +631,9 @@ fn register_local_defs_in_body(
                         });
                     }
                     Entry::Vacant(entry) => {
+                        table
+                            .local_cell_owners
+                            .insert(c.name.clone(), owner.to_string());
                         entry.insert(CellInfo {
                             params: c
                                 .params
@@ -646,25 +654,25 @@ fn register_local_defs_in_body(
                     }
                 }
                 // Recurse into the nested cell's body for deeper nesting
-                register_local_defs_in_body(&c.body, table, errors);
+                register_local_defs_in_body(owner, &c.body, table, errors);
             }
             // Recurse into block-containing statements so we catch nested defs
             // inside if/for/while/loop/match/defer bodies.
             Stmt::If(s) => {
-                register_local_defs_in_body(&s.then_body, table, errors);
+                register_local_defs_in_body(owner, &s.then_body, table, errors);
                 if let Some(ref eb) = s.else_body {
-                    register_local_defs_in_body(eb, table, errors);
+                    register_local_defs_in_body(owner, eb, table, errors);
                 }
             }
-            Stmt::For(s) => register_local_defs_in_body(&s.body, table, errors),
-            Stmt::While(s) => register_local_defs_in_body(&s.body, table, errors),
-            Stmt::Loop(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::For(s) => register_local_defs_in_body(owner, &s.body, table, errors),
+            Stmt::While(s) => register_local_defs_in_body(owner, &s.body, table, errors),
+            Stmt::Loop(s) => register_local_defs_in_body(owner, &s.body, table, errors),
             Stmt::Match(s) => {
                 for arm in &s.arms {
-                    register_local_defs_in_body(&arm.body, table, errors);
+                    register_local_defs_in_body(owner, &arm.body, table, errors);
                 }
             }
-            Stmt::Defer(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::Defer(s) => register_local_defs_in_body(owner, &s.body, table, errors),
             _ => {}
         }
     }
@@ -1158,6 +1166,12 @@ fn resolve_with_base_inner(
     // Register local definitions (nested records, enums, cells inside cell bodies)
     // by scanning all cell bodies for LocalRecord/LocalEnum/LocalCell statements.
     for item in &program.items {
+        let owner = match item {
+            Item::Cell(c) => c.name.clone(),
+            Item::Process(p) => p.name.clone(),
+            Item::Agent(a) => a.name.clone(),
+            _ => String::new(),
+        };
         let bodies: Vec<&[Stmt]> = match item {
             Item::Cell(c) => vec![&c.body],
             Item::Process(p) => p.cells.iter().map(|c| c.body.as_slice()).collect(),
@@ -1165,7 +1179,7 @@ fn resolve_with_base_inner(
             _ => vec![],
         };
         for body in bodies {
-            register_local_defs_in_body(body, &mut table, &mut errors);
+            register_local_defs_in_body(&owner, body, &mut table, &mut errors);
         }
     }
 

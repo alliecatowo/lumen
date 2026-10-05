@@ -286,6 +286,7 @@ fn fuzz_verification_no_panic() {
         impls: Default::default(),
         consts: Default::default(),
         private_imports: Default::default(),
+        local_cell_owners: Default::default(),
     };
 
     let ops = [

@@ -65,6 +65,8 @@ interface OAuthSession {
   createdAt: number;
   status: 'pending' | 'awaiting_confirmation' | 'completed' | 'failed';
   result?: OAuthResult;
+  /** Human-readable reason shown in the browser when status is 'failed'. Never contains secrets. */
+  failureReason?: string;
 }
 
 interface OAuthResult {
@@ -121,7 +123,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (path === '/v1/auth/oidc/callback' && method === 'GET') {
       const stateParam = url.searchParams.get('state');
       if (!stateParam) {
-        return json({ error: 'Missing state parameter' }, corsHeaders, 400);
+        return errorPage('Invalid login link', 'Run `wares login` again in your terminal to start over.', corsHeaders, 400);
       }
       return handleCallback(stateParam.split(':')[0], url, env, corsHeaders);
     }
@@ -396,27 +398,114 @@ async function handleLogin(request: Request, env: Env, corsHeaders: Headers_): P
   );
 }
 
+function htmlPage(body: string, corsHeaders: Headers_, status = 200): Response {
+  return new Response(
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Wares login</title></head>` +
+      `<body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 0 16px; text-align: center;">${body}</body></html>`,
+    { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders } },
+  );
+}
+
+function errorPage(title: string, detail: string, corsHeaders: Headers_, status: number): Response {
+  return htmlPage(`<h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>`, corsHeaders, status);
+}
+
+function confirmPage(session: OAuthSession, corsHeaders: Headers_): Response {
+  const identity = session.result?.identity ?? '';
+  return htmlPage(
+    `<h1>Confirm login</h1>
+      <p>Signed in as <code>${escapeHtml(identity)}</code>.</p>
+      <p>Type the code shown in your terminal. If you did not start a login with <code>wares login</code>, close this tab.</p>
+      <form method="POST" action="/api/v1/auth/oidc/confirm">
+        <input type="hidden" name="session_id" value="${escapeHtml(session.sessionId)}">
+        <input name="user_code" autocomplete="off" autofocus placeholder="XXXX-XXXX" style="font-size: 1.4em; text-align: center; width: 90%;">
+        <button type="submit" style="font-size: 1.4em; margin-top: 12px;">Confirm</button>
+      </form>`,
+    corsHeaders,
+  );
+}
+
+function successPage(corsHeaders: Headers_): Response {
+  return htmlPage('<h1>Authentication successful</h1><p>You can close this window and return to the CLI.</p>', corsHeaders);
+}
+
+function failedPage(session: OAuthSession, corsHeaders: Headers_): Response {
+  return errorPage(
+    'Login failed',
+    `${session.failureReason ?? 'This login attempt failed.'} Run \`wares login\` again in your terminal to start over.`,
+    corsHeaders,
+    400,
+  );
+}
+
+async function failSession(env: Env, session: OAuthSession, reason: string): Promise<void> {
+  console.log(`[oidc] ${session.sessionId.slice(0, 8)} ${session.status} -> failed: ${reason}`);
+  session.status = 'failed';
+  session.failureReason = reason;
+  session.result = undefined;
+  await saveSession(env, session);
+}
+
+/** Render the page matching a session that is not (or no longer) pending. Safe to hit repeatedly. */
+function pageForSettledSession(session: OAuthSession, corsHeaders: Headers_): Response {
+  switch (session.status) {
+    case 'awaiting_confirmation':
+      return confirmPage(session, corsHeaders);
+    case 'completed':
+      return successPage(corsHeaders);
+    default:
+      return failedPage(session, corsHeaders);
+  }
+}
+
 async function handleCallback(sessionId: string, url: URL, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const sid = sessionId.slice(0, 8);
   const session = await loadSession(env, sessionId);
   if (!session) {
-    return json({ error: 'Session not found or expired' }, corsHeaders, 404);
-  }
-  if (session.status !== 'pending') {
-    return json({ error: 'Session already used' }, corsHeaders, 409);
+    console.log(`[oidc] ${sid} callback: session not found or expired`);
+    return errorPage(
+      'Login session not found or expired',
+      'Run `wares login` again in your terminal to start over.',
+      corsHeaders,
+      404,
+    );
   }
 
   const code = url.searchParams.get('code');
   const error = url.searchParams.get('error');
   const state = url.searchParams.get('state')?.split(':')[1];
+  const stateOk = !!state && timingSafeEqual(state, session.state);
+
+  // Reloads, prefetches and double navigations: never re-exchange the code.
+  if (session.status !== 'pending') {
+    console.log(`[oidc] ${sid} callback reloaded in status ${session.status}`);
+    if (!stateOk) {
+      return errorPage('Invalid login link', 'Run `wares login` again in your terminal to start over.', corsHeaders, 400);
+    }
+    return pageForSettledSession(session, corsHeaders);
+  }
 
   if (error) {
-    session.status = 'failed';
-    await saveSession(env, session);
-    return json({ error: 'OAuth authorization was denied' }, corsHeaders, 400);
+    if (!stateOk) {
+      return errorPage('Invalid login link', 'Run `wares login` again in your terminal to start over.', corsHeaders, 400);
+    }
+    await failSession(env, session, 'GitHub authorization was denied.');
+    return failedPage(session, corsHeaders);
   }
-  if (!code || !state || !timingSafeEqual(state, session.state)) {
-    return json({ error: 'Invalid code or state' }, corsHeaders, 400);
+  if (!code || !stateOk) {
+    console.log(`[oidc] ${sid} callback: invalid code or state`);
+    return errorPage('Invalid login link', 'Run `wares login` again in your terminal to start over.', corsHeaders, 400);
   }
+
+  // A concurrent duplicate request may have settled the session while we were exchanging.
+  const settledMeanwhile = async (): Promise<Response | null> => {
+    const fresh = await loadSession(env, sessionId);
+    if (fresh && fresh.status !== 'pending') {
+      console.log(`[oidc] ${sid} concurrent callback already settled the session (${fresh.status})`);
+      return pageForSettledSession(fresh, corsHeaders);
+    }
+    return null;
+  };
 
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
@@ -429,43 +518,38 @@ async function handleCallback(sessionId: string, url: URL, env: Env, corsHeaders
       code_verifier: session.pkceVerifier,
     }),
   });
-  const tokenData = (await tokenRes.json()) as any;
+  const tokenData = (await tokenRes.json().catch(() => ({}))) as any;
   if (tokenData.error || !tokenData.access_token) {
-    session.status = 'failed';
-    await saveSession(env, session);
-    return json({ error: 'OAuth token exchange failed' }, corsHeaders, 400);
+    const settled = await settledMeanwhile();
+    if (settled) return settled;
+    await failSession(env, session, `GitHub rejected the token exchange (${String(tokenData.error ?? 'no access token')}).`);
+    return failedPage(session, corsHeaders);
   }
 
   const userRes = await fetch('https://api.github.com/user', {
     headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'wares-registry/1.0' },
   });
   if (!userRes.ok) {
-    return json({ error: 'Could not read GitHub user' }, corsHeaders, 502);
+    const settled = await settledMeanwhile();
+    if (settled) return settled;
+    await failSession(env, session, `Could not read your GitHub profile (HTTP ${userRes.status}).`);
+    return failedPage(session, corsHeaders);
   }
   const userData = (await userRes.json()) as any;
   const identity = identityFromGithub(userData);
+
+  const settled = await settledMeanwhile();
+  if (settled) return settled;
 
   session.result = {
     accessToken: tokenData.access_token,
     identity,
     expiresIn: tokenData.expires_in || 3600,
   };
+  console.log(`[oidc] ${sid} pending -> awaiting_confirmation`);
   session.status = 'awaiting_confirmation';
   await saveSession(env, session);
-
-  return new Response(
-    `<html><body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; text-align: center;">
-      <h1>Confirm login</h1>
-      <p>Signed in as <code>${escapeHtml(identity)}</code>.</p>
-      <p>Type the code shown in your terminal. If you did not start a login with <code>wares login</code>, close this tab.</p>
-      <form method="POST" action="/api/v1/auth/oidc/confirm">
-        <input type="hidden" name="session_id" value="${escapeHtml(session.sessionId)}">
-        <input name="user_code" autocomplete="off" autofocus placeholder="XXXX-XXXX" style="font-size: 1.4em; text-align: center;">
-        <button type="submit" style="font-size: 1.4em;">Confirm</button>
-      </form>
-    </body></html>`,
-    { headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders } },
-  );
+  return confirmPage(session, corsHeaders);
 }
 
 async function handleConfirm(request: Request, env: Env, corsHeaders: Headers_): Promise<Response> {
@@ -491,18 +575,13 @@ async function handleConfirm(request: Request, env: Env, corsHeaders: Headers_):
   }
   if (!timingSafeEqual(userCode.trim().toUpperCase(), session.userCode)) {
     // A wrong code burns the session: the code space is small.
-    session.status = 'failed';
-    session.result = undefined;
-    await saveSession(env, session);
+    await failSession(env, session, 'The confirmation code was incorrect.');
     return json({ error: 'Incorrect code; start the login again' }, corsHeaders, 403);
   }
+  console.log(`[oidc] ${session.sessionId.slice(0, 8)} awaiting_confirmation -> completed`);
   session.status = 'completed';
   await saveSession(env, session);
-  return new Response(
-    `<html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-       <h1>Authentication successful</h1><p>You can close this window and return to the CLI.</p></body></html>`,
-    { headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders } },
-  );
+  return successPage(corsHeaders);
 }
 
 async function handleToken(

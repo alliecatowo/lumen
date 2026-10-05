@@ -96,6 +96,7 @@ fn empty_symbol_table() -> SymbolTable {
         traits: Default::default(),
         impls: Default::default(),
         consts: Default::default(),
+        private_imports: Default::default(),
     }
 }
 

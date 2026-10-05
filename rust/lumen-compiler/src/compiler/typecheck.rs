@@ -1736,6 +1736,12 @@ impl<'a> TypeChecker<'a> {
                 // built-in
                 else if name == "null" {
                     Type::Null
+                } else if self.symbols.private_imports.contains_key(name) {
+                    self.errors.push(TypeError::UndefinedVar {
+                        name: name.clone(),
+                        line: span.line,
+                    });
+                    Type::Any
                 } else if self.allow_placeholders && is_doc_placeholder_var(name) {
                     Type::Any
                 } else {
@@ -1953,6 +1959,18 @@ impl<'a> TypeChecker<'a> {
                             ));
                         }
                         CallArg::Role(_, _, _) => {}
+                    }
+                }
+                // Calling a private cell that a wildcard import skipped.
+                if let Expr::Ident(name, ident_span) = callee.as_ref() {
+                    if !self.locals.contains_key(name)
+                        && !self.symbols.cells.contains_key(name)
+                        && self.symbols.private_imports.contains_key(name)
+                    {
+                        self.errors.push(TypeError::UndefinedVar {
+                            name: name.clone(),
+                            line: ident_span.line,
+                        });
                     }
                 }
                 // Try to resolve the return type

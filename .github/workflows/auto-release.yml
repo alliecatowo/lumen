@@ -62,7 +62,8 @@ jobs:
             echo "Created and pushed tag $TAG"
             # Tags pushed with GITHUB_TOKEN do not trigger the tag-based Release
             # workflow, so start it explicitly on the new tag. release.yml waits for
-            # CI on this commit and refuses to ship if CI is red. Publishing to
-            # crates.io/npm stays a deliberate manual run of publish.yml.
+            # CI on this commit and refuses to ship if CI is red. The same goes for
+            # publish.yml (crates.io, npm; OIDC trusted publishing), so dispatch it too.
             gh workflow run release.yml --ref "$TAG"
+            gh workflow run publish.yml --ref "$TAG" -f target=all
           fi

@@ -1,0 +1,8 @@
+[package]
+name = "@alliecatowo/collections"
+version = "0.1.0"
+description = "List utilities: range, chunk, zip, flatten, unique, take, drop, group and more."
+authors = ["alliecatowo"]
+license = "MIT"
+repository = "https://github.com/alliecatowo/lumen"
+keywords = ["stdlib", "collections"]

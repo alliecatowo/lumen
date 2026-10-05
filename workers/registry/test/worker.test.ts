@@ -304,6 +304,90 @@ describe('oauth login flow', () => {
     expect(tok.status).toBe(400);
   });
 
+  describe('callback is safe to load more than once', () => {
+    const cbUrl = (state: string) => `/v1/auth/oidc/callback?code=c&state=${encodeURIComponent(state)}`;
+    const exchanges = () =>
+      (fetch as any).mock.calls.filter((c: any[]) => String(c[0]) === 'https://github.com/login/oauth/access_token').length;
+
+    it('re-renders the confirm form while awaiting_confirmation, without re-exchanging the code', async () => {
+      const { cb, state, started } = await startAndCallback();
+      expect(cb.status).toBe(200);
+      expect(exchanges()).toBe(1);
+      const again = await call(cbUrl(state));
+      expect(again.status).toBe(200);
+      expect(again.headers.get('Content-Type')).toContain('text/html');
+      const html = await again.text();
+      expect(html).toContain('Confirm login');
+      expect(html).toContain(started.session_id);
+      expect(html).not.toContain('gho_login_token');
+      expect(exchanges()).toBe(1);
+      // A wrong state does not get the form.
+      const bad = await call(cbUrl(`${started.session_id}:wrong`));
+      expect(bad.status).toBe(400);
+      expect(await bad.text()).not.toContain('Confirm login');
+    });
+
+    it('shows a readable failure page for a failed session', async () => {
+      const { started, state } = await startAndCallback();
+      await call('/v1/auth/oidc/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: started.session_id, user_code: 'AAAA-AAAA' }),
+      });
+      const res = await call(cbUrl(state));
+      expect(res.status).toBe(400);
+      expect(res.headers.get('Content-Type')).toContain('text/html');
+      const html = await res.text();
+      expect(html).toContain('confirmation code was incorrect');
+      expect(html).toContain('wares login');
+      expect(exchanges()).toBe(1);
+    });
+
+    it('shows the success page for a completed session', async () => {
+      const { started, state } = await startAndCallback();
+      await call('/v1/auth/oidc/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: started.session_id, user_code: started.user_code }),
+      });
+      const res = await call(cbUrl(state));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('Authentication successful');
+      expect(exchanges()).toBe(1);
+    });
+
+    it('stores a failure reason and shows an HTML page when the token exchange fails', async () => {
+      const started = (await (await login()).json()) as any;
+      const state = new URL(started.auth_url).searchParams.get('state')!;
+      const orig = globalThis.fetch;
+      vi.stubGlobal('fetch', vi.fn(async (input: any, init?: any) => {
+        if (String(input) === 'https://github.com/login/oauth/access_token') {
+          return new Response(JSON.stringify({ error: 'bad_verification_code' }), { status: 200 });
+        }
+        return (orig as any)(input, init);
+      }));
+      const res = await call(cbUrl(state));
+      expect(res.status).toBe(400);
+      expect(res.headers.get('Content-Type')).toContain('text/html');
+      const html = await res.text();
+      expect(html).toContain('bad_verification_code');
+      expect(html).toContain('wares login');
+      // Reload shows the same page and the CLI sees a failure.
+      const again = await call(cbUrl(state));
+      expect(again.status).toBe(400);
+      expect(await again.text()).toContain('bad_verification_code');
+      const tok = await call(`/v1/auth/oidc/token?session_id=${started.session_id}`, { headers: { 'X-Client-Verifier': verifier } });
+      expect(tok.status).toBe(400);
+    });
+
+    it('returns HTML for unknown sessions and bogus links', async () => {
+      const res = await call('/v1/auth/oidc/callback?state=bogus:bogus');
+      expect(res.status).toBe(404);
+      expect(res.headers.get('Content-Type')).toContain('text/html');
+      expect(await res.text()).toContain('not found or expired');
+    });
+  });
+
   it('expires sessions', async () => {
     const started = (await (await login()).json()) as any;
     const key = `sessions/${started.session_id}.json`;

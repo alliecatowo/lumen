@@ -789,6 +789,7 @@ mod tests {
             impls: Default::default(),
             consts: Default::default(),
             private_imports: Default::default(),
+            local_cell_owners: Default::default(),
         }
     }
 

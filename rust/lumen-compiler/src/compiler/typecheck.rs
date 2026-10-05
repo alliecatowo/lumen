@@ -692,6 +692,8 @@ struct TypeChecker<'a> {
     scopes: Vec<Vec<ScopeEntry>>,
     /// Enclosing loops of the statement being checked: (label, is `loop`).
     loop_frames: Vec<(Option<String>, bool)>,
+    /// Top-level cell whose body is being checked; gates access to its local cells.
+    current_owner: Option<String>,
     errors: Vec<TypeError>,
 }
 
@@ -710,6 +712,7 @@ impl<'a> TypeChecker<'a> {
             mutables: HashMap::new(),
             scopes: Vec::new(),
             loop_frames: Vec::new(),
+            current_owner: None,
             errors: Vec::new(),
         }
     }
@@ -837,6 +840,43 @@ impl<'a> TypeChecker<'a> {
         for (i, stmt) in cell.body.iter().enumerate() {
             let is_tail = body_len > 0 && i == body_len - 1;
             self.check_stmt(stmt, return_type.as_ref(), is_tail);
+        }
+    }
+
+    /// Typecheck the bodies of local cells declared inside `body` (they are lifted to module
+    /// level, so each is checked with a fresh set of locals).
+    fn check_local_cells(&mut self, body: &[Stmt]) {
+        for stmt in body {
+            match stmt {
+                Stmt::LocalCell(c) => {
+                    self.check_cell(c);
+                    self.check_local_cells(&c.body);
+                }
+                Stmt::If(s) => {
+                    self.check_local_cells(&s.then_body);
+                    if let Some(eb) = &s.else_body {
+                        self.check_local_cells(eb);
+                    }
+                }
+                Stmt::For(s) => self.check_local_cells(&s.body),
+                Stmt::While(s) => self.check_local_cells(&s.body),
+                Stmt::Loop(s) => self.check_local_cells(&s.body),
+                Stmt::Match(s) => {
+                    for arm in &s.arms {
+                        self.check_local_cells(&arm.body);
+                    }
+                }
+                Stmt::Defer(s) => self.check_local_cells(&s.body),
+                _ => {}
+            }
+        }
+    }
+
+    /// True when `name` is a local cell declared inside a different top-level cell.
+    fn local_cell_hidden(&self, name: &str) -> bool {
+        match self.symbols.local_cell_owners.get(name) {
+            Some(owner) => self.current_owner.as_deref() != Some(owner.as_str()),
+            None => false,
         }
     }
 
@@ -1717,6 +1757,12 @@ impl<'a> TypeChecker<'a> {
                 // Built-in math constants
                 else if is_builtin_math_constant(name) {
                     builtin_math_constant_type(name)
+                } else if self.local_cell_hidden(name) {
+                    self.errors.push(TypeError::UndefinedVar {
+                        name: name.clone(),
+                        line: span.line,
+                    });
+                    Type::Any
                 }
                 // cell ref, tool ref, agent constructor ref, addendum decl refs, type/value references, built-in
                 else if self.symbols.cells.contains_key(name)
@@ -1964,8 +2010,9 @@ impl<'a> TypeChecker<'a> {
                 // Calling a private cell that a wildcard import skipped.
                 if let Expr::Ident(name, ident_span) = callee.as_ref() {
                     if !self.locals.contains_key(name)
-                        && !self.symbols.cells.contains_key(name)
-                        && self.symbols.private_imports.contains_key(name)
+                        && ((!self.symbols.cells.contains_key(name)
+                            && self.symbols.private_imports.contains_key(name))
+                            || self.local_cell_hidden(name))
                     {
                         self.errors.push(TypeError::UndefinedVar {
                             name: name.clone(),
@@ -2925,16 +2972,27 @@ pub fn typecheck(program: &Program, symbols: &SymbolTable) -> Result<(), Vec<Typ
     let mut checker = TypeChecker::new(symbols, allow_placeholders);
     for item in &program.items {
         match item {
-            Item::Cell(c) => checker.check_cell(c),
+            Item::Cell(c) => {
+                checker.current_owner = Some(c.name.clone());
+                checker.check_cell(c);
+                checker.check_local_cells(&c.body);
+                checker.current_owner = None;
+            }
             Item::Agent(a) => {
+                checker.current_owner = Some(a.name.clone());
                 for cell in &a.cells {
                     checker.check_agent_cell(cell);
+                    checker.check_local_cells(&cell.body);
                 }
+                checker.current_owner = None;
             }
             Item::Process(p) => {
+                checker.current_owner = Some(p.name.clone());
                 for cell in &p.cells {
                     checker.check_cell(cell);
+                    checker.check_local_cells(&cell.body);
                 }
+                checker.current_owner = None;
             }
             Item::Effect(e) => {
                 for op in &e.operations {
@@ -2976,6 +3034,37 @@ mod tests {
         let prog = parser.parse_program(vec![]).unwrap();
         let symbols = resolve::resolve(&prog).unwrap();
         typecheck(&prog, &symbols)
+    }
+
+    #[test]
+    fn local_cell_usable_inside_declaring_cell() {
+        typecheck_src(
+            "cell outer() -> Int\n  cell helper(x: Int) -> Int\n    return x + 1\n  end\n  return helper(2)\nend",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn local_cell_body_is_typechecked() {
+        let err = typecheck_src(
+            "cell outer() -> Int\n  cell helper(x: Int) -> Int\n    return x + \"oops\"\n  end\n  return helper(2)\nend",
+        )
+        .unwrap_err();
+        assert!(
+            !err.is_empty(),
+            "type error inside a local cell must be reported"
+        );
+    }
+
+    #[test]
+    fn local_cell_is_not_visible_to_other_cells() {
+        let err = typecheck_src(
+            "cell outer() -> Int\n  cell helper(x: Int) -> Int\n    return x\n  end\n  return helper(1)\nend\n\ncell other() -> Int\n  return helper(2)\nend",
+        )
+        .unwrap_err();
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, TypeError::UndefinedVar { name, .. } if name == "helper")));
     }
 
     #[test]

@@ -485,6 +485,7 @@ fn verify_record_field_constraint_always_true() {
         impls: Default::default(),
         consts: Default::default(),
         private_imports: Default::default(),
+        local_cell_owners: Default::default(),
     };
 
     let results = verify(&program, &symbols);

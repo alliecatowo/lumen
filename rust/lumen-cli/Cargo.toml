@@ -42,7 +42,7 @@ ed25519-dalek = { version = "3", features = ["rand_core"], optional = true }
 rand = { version = "0.10", optional = true }
 base64 = "0.23"
 # Ephemeral ECDSA P-256 keys for package signing (matches the registry CA / log worker).
-p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "std"] }
+p256 = { version = "0.14", features = ["ecdsa", "pkcs8", "std"] }
 rpassword = "7"
 thiserror = { workspace = true }
 glob = "0.3"

@@ -12,7 +12,7 @@
     "docs:build": "vitepress build ."
   },
   "dependencies": {
-    "nuxt": "^4.6.1",
+    "nuxt": "^4.6.2",
     "vue": "^3.5.44",
     "vue-router": "^5.3.1"
   },

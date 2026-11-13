@@ -20,9 +20,9 @@
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
-    "@vue/server-renderer": "3.5.44",
+    "@vue/server-renderer": "3.5.45",
     "codemirror": "^6.0.2",
-    "vue": "3.5.44"
+    "vue": "3.5.45"
   },
   "overrides": {
     "vite": "^6.4.3"

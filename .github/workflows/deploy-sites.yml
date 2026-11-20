@@ -36,7 +36,7 @@ jobs:
         run: echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the lumen-lang.com deploy"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         with:
           install_args: rust node
@@ -45,7 +45,7 @@ jobs:
       - name: Build lumen-wasm for the playground
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: wasm-pack build rust/lumen-wasm --target web --release --out-dir ../../docs/public/wasm
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         with:
           install_args: node
@@ -69,7 +69,7 @@ jobs:
         run: echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the wares.lumen-lang.com deploy"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         with:
           install_args: node

@@ -9,7 +9,7 @@
     "build:wasm": "if command -v wasm-pack >/dev/null 2>&1; then cd ../rust/lumen-wasm && wasm-pack build --target web --out-dir ../../docs/public/wasm; elif [ -n \"$CI\" ]; then echo \"wasm-pack is required in CI to build docs\" >&2; exit 1; else echo \"wasm-pack not found; skipping local WASM build for docs\"; fi"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
+    "@types/node": "^26.6.7",
     "vitepress": "^1.6.3"
   },
   "dependencies": {
@@ -20,9 +20,9 @@
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
-    "@vue/server-renderer": "3.5.45",
+    "@vue/server-renderer": "3.5.46",
     "codemirror": "^6.0.2",
-    "vue": "3.5.45"
+    "vue": "3.5.46"
   },
   "overrides": {
     "vite": "^6.4.3"
